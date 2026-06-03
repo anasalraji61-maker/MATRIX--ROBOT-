@@ -1,0 +1,81 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "artifacts/python-agents: Python Agent Service"
+
+[[workflows.workflow]]
+name = "artifacts/python-agents: Python Agent Service"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash artifacts/python-agents/start.sh"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8082
+externalPort = 3001
+
+[[ports]]
+localPort = 8099
+externalPort = 8099
+
+[[ports]]
+localPort = 23183
+externalPort = 3000
+
+[nix]
+channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+SYMBOLS = "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,NZDUSD,USDCAD,EURGBP,EURJPY,GBPJPY,EURAUD,EURCHF,AUDJPY,CHFJPY,CADJPY,NZDJPY,GBPCHF,AUDCAD,AUDNZD,XAUUSD,XAGUSD,US30,US500,USTEC"
+MAX_RISK_PER_TRADE_PCT = "0.8"
+MAX_CONCURRENT_POSITIONS = "5"
+MIN_CONVICTION_THRESHOLD = "0.60"
+MT5_BRIDGE_URL = "http://185.211.5.217:5555"
+MT5_BRIDGE_SECRET = "Aa199319931993199319931993199319931993"
+TWELVE_DATA_API_KEY = "7f127eac513143f4b6115c8996c48943"
+PYTHON_AGENT_URL = "http://185.211.5.217:8000"
+DISABLE_SCHEDULER = "true"

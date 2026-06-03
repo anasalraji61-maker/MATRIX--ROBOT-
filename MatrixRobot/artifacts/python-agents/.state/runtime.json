@@ -1,0 +1,7 @@
+{
+  "mode": "PAPER_MODE",
+  "scheduler": {
+    "running": true,
+    "interval_minutes": 15
+  }
+}

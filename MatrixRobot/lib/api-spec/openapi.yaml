@@ -1,0 +1,1085 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: dashboard
+    description: Trading dashboard data
+  - name: sentiment
+    description: Sentiment analysis via FinGPT and Mention
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /dashboard/status:
+    get:
+      operationId: getDashboardStatus
+      tags: [dashboard]
+      summary: Get full dashboard status
+      description: Returns all system status, account info, and trading state
+      responses:
+        "200":
+          description: Dashboard status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStatus"
+
+  /dashboard/news:
+    get:
+      operationId: getLatestNews
+      tags: [dashboard]
+      summary: Get latest market news
+      description: Returns recent market news items
+      responses:
+        "200":
+          description: List of news items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NewsItem"
+
+  /dashboard/agent-decisions:
+    get:
+      operationId: getAgentDecisions
+      tags: [dashboard]
+      summary: Get latest agent decisions
+      description: Returns recent decisions made by the AI agents
+      responses:
+        "200":
+          description: List of agent decisions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentDecision"
+
+  /dashboard/refresh:
+    post:
+      operationId: refreshDashboard
+      tags: [dashboard]
+      summary: Trigger data refresh
+      description: Forces agents to refresh their data
+      responses:
+        "200":
+          description: Refresh triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshResult"
+
+  /agents/pnl/summary:
+    get:
+      operationId: getPnlSummary
+      tags: [agents]
+      summary: Get realized P&L summary from closed trades
+      responses:
+        "200":
+          description: P&L summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PnlSummary"
+
+  /agents/strategy/scores:
+    get:
+      operationId: getStrategyScores
+      tags: [agents]
+      summary: Get passive strategy performance scores
+      description: Returns rolling win/loss rates per strategy (ICT, Wyckoff, MTF, etc.)
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Strategy scores
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyScores"
+
+  /usage:
+    get:
+      operationId: getUsageStats
+      tags: [dashboard]
+      summary: Get API usage statistics
+      description: Returns OpenRouter balance and Twelve Data credit usage
+      responses:
+        "200":
+          description: Usage statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageStats"
+
+  /stack:
+    get:
+      operationId: getSystemStack
+      tags: [dashboard]
+      summary: Get full system stack status
+      description: Returns configuration and status of all services in the Matrix Robot architecture
+      responses:
+        "200":
+          description: System stack status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStack"
+
+  /trades:
+    get:
+      operationId: getActiveTrades
+      tags: [dashboard]
+      summary: Get active open positions
+      description: Returns all currently open trade positions
+      responses:
+        "200":
+          description: List of active trades
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Trade"
+
+  /trades/{tradeId}/close:
+    post:
+      operationId: closeTrade
+      tags: [dashboard]
+      summary: Manually close a trade
+      description: Sends a close instruction for a specific open trade
+      parameters:
+        - name: tradeId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trade close result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradeActionResult"
+        "404":
+          description: Trade not found
+
+  /trades/{tradeId}/increase:
+    post:
+      operationId: increaseTrade
+      tags: [dashboard]
+      summary: Manually increase a trade position
+      description: Adds to an existing open position
+      parameters:
+        - name: tradeId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IncreaseTradeRequest"
+      responses:
+        "200":
+          description: Trade increase result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradeActionResult"
+        "404":
+          description: Trade not found
+
+  /sentiment:
+    get:
+      operationId: getSentiment
+      tags: [sentiment]
+      summary: Get aggregated sentiment analysis
+      description: Returns Polygon financial news classified by GPT-4o-mini via OpenRouter
+      responses:
+        "200":
+          description: Sentiment analysis result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SentimentReport"
+
+  /agents/status:
+    get:
+      operationId: getAgentServiceStatus
+      tags: [agents]
+      summary: Python agent service health and info
+      responses:
+        "200":
+          description: Agent service status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentServiceStatus"
+
+  /agents/cycle/run:
+    post:
+      operationId: runAgentCycle
+      tags: [agents]
+      summary: Trigger a new agent decision cycle
+      security:
+        - AdminSecret: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunCycleRequest"
+      responses:
+        "200":
+          description: Cycle started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCycleResult"
+
+  /agents/cycle/status:
+    get:
+      operationId: getAgentCycleStatus
+      tags: [agents]
+      summary: Latest agent cycle result
+      responses:
+        "200":
+          description: Cycle result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCycleResult"
+
+  /agents/signals:
+    get:
+      operationId: getAgentSignals
+      tags: [agents]
+      summary: Latest trading signals from agent cycle
+      responses:
+        "200":
+          description: Signals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSignals"
+
+  /agents/mode:
+    get:
+      operationId: getTradingMode
+      tags: [agents]
+      summary: Get current trading mode
+      responses:
+        "200":
+          description: Current mode info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradingModeStatus"
+    post:
+      operationId: setTradingMode
+      tags: [agents]
+      summary: Switch trading mode
+      security:
+        - AdminSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetModeRequest"
+      responses:
+        "200":
+          description: Mode switched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModeChangeResult"
+        "400":
+          description: Invalid mode or MT5 not configured
+
+  /agents/scheduler/status:
+    get:
+      operationId: getSchedulerStatus
+      tags: [agents]
+      summary: Get auto-cycle scheduler status
+      responses:
+        "200":
+          description: Scheduler status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /agents/scheduler/start:
+    post:
+      operationId: startScheduler
+      tags: [agents]
+      summary: Start auto-cycle scheduler
+      security:
+        - AdminSecret: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulerRequest"
+      responses:
+        "200":
+          description: Scheduler started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /agents/scheduler/stop:
+    post:
+      operationId: stopScheduler
+      tags: [agents]
+      summary: Stop auto-cycle scheduler
+      security:
+        - AdminSecret: []
+      responses:
+        "200":
+          description: Scheduler stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchedulerStatus"
+
+  /agents/positions/live:
+    get:
+      operationId: getLivePositions
+      tags: [agents]
+      summary: Get live open positions (from MT5 or memory)
+      responses:
+        "200":
+          description: Live positions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LivePositionsResult"
+
+  /agents/positions/{tradeId}/close:
+    post:
+      operationId: closeAgentPosition
+      tags: [agents]
+      summary: Close a specific position
+      security:
+        - AdminSecret: []
+      parameters:
+        - name: tradeId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Position closed
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  securitySchemes:
+    AdminSecret:
+      type: apiKey
+      in: header
+      name: X-Admin-Secret
+      description: >
+        Required for all write (POST/DELETE) endpoints on the agent proxy.
+        Set ADMIN_SECRET in Replit Secrets (defaults to MT5_BRIDGE_SECRET).
+        The dashboard sends this automatically via VITE_ADMIN_SECRET env var.
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ConnectionStatus:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        message:
+          type: string
+        latencyMs:
+          type: ["integer", "null"]
+      required:
+        - connected
+        - message
+
+    AccountInfo:
+      type: object
+      properties:
+        balance:
+          type: number
+        equity:
+          type: number
+        dailyDrawdownPct:
+          type: number
+        totalDrawdownPct:
+          type: number
+        dailyLimitPct:
+          type: number
+        totalLimitPct:
+          type: number
+        currency:
+          type: string
+      required:
+        - balance
+        - equity
+        - dailyDrawdownPct
+        - totalDrawdownPct
+        - dailyLimitPct
+        - totalLimitPct
+        - currency
+
+    PnlSummary:
+      type: object
+      properties:
+        today_realized:
+          type: number
+        total_realized:
+          type: number
+        today_trades:
+          type: integer
+        total_trades:
+          type: integer
+        total_wins:
+          type: integer
+        total_losses:
+          type: integer
+        win_rate:
+          type: number
+          nullable: true
+        best_trade:
+          type: number
+          nullable: true
+        worst_trade:
+          type: number
+          nullable: true
+        updated_at:
+          type: string
+      required: [today_realized, total_realized, today_trades, total_trades, total_wins, total_losses]
+
+    StrategyScoreItem:
+      type: object
+      properties:
+        strategy:
+          type: string
+        signals:
+          type: integer
+        completed:
+          type: integer
+        wins:
+          type: integer
+        losses:
+          type: integer
+        win_rate:
+          type: number
+          nullable: true
+        avg_confidence:
+          type: number
+          nullable: true
+        last_signal:
+          type: string
+          nullable: true
+        dominant:
+          type: boolean
+      required: [strategy, signals, completed, wins, losses, dominant]
+
+    StrategyScores:
+      type: object
+      properties:
+        scores:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrategyScoreItem"
+        dominant_strategy:
+          type: string
+          nullable: true
+        window_trades:
+          type: integer
+        updated_at:
+          type: string
+      required: [scores, window_trades]
+
+    UsageStats:
+      type: object
+      properties:
+        openrouter:
+          type: object
+          properties:
+            available:
+              type: boolean
+            total_spent_usd:
+              type: number
+            daily_spent_usd:
+              type: number
+            remaining_usd:
+              type: number
+            initial_balance_usd:
+              type: number
+          required: [available]
+        twelve_data:
+          type: object
+          properties:
+            available:
+              type: boolean
+            credits_used:
+              type: number
+            credits_limit:
+              type: number
+            plan:
+              type: string
+            timestamp:
+              type: string
+              nullable: true
+          required: [available]
+      required: [openrouter, twelve_data]
+
+    TradingState:
+      type: string
+      enum: [PAPER_MODE, ACTIVE, FROZEN]
+
+    DashboardStatus:
+      type: object
+      properties:
+        systemOnline:
+          type: boolean
+        tradingState:
+          $ref: "#/components/schemas/TradingState"
+        polygon:
+          $ref: "#/components/schemas/ConnectionStatus"
+        redis:
+          $ref: "#/components/schemas/ConnectionStatus"
+        postgres:
+          $ref: "#/components/schemas/ConnectionStatus"
+        mt5:
+          $ref: "#/components/schemas/ConnectionStatus"
+        account:
+          $ref: "#/components/schemas/AccountInfo"
+        lastUpdated:
+          type: string
+      required:
+        - systemOnline
+        - tradingState
+        - polygon
+        - redis
+        - postgres
+        - mt5
+        - account
+        - lastUpdated
+
+    NewsItem:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        source:
+          type: string
+        impact:
+          type: string
+          enum: [LOW, MEDIUM, HIGH]
+        publishedAt:
+          type: string
+        currency:
+          type: ["string", "null"]
+      required:
+        - id
+        - title
+        - source
+        - impact
+        - publishedAt
+
+    AgentDecision:
+      type: object
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        decision:
+          type: string
+        reason:
+          type: string
+        timestamp:
+          type: string
+        approved:
+          type: ["boolean", "null"]
+      required:
+        - id
+        - agent
+        - decision
+        - reason
+        - timestamp
+
+    StackServiceStatus:
+      type: string
+      enum: [active, configured, partial, missing]
+
+    StackService:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: "#/components/schemas/StackServiceStatus"
+        configured:
+          type: boolean
+        setupHint:
+          type: string
+          description: What env var(s) to set to enable this service
+      required:
+        - id
+        - name
+        - category
+        - description
+        - status
+        - configured
+
+    SystemStack:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/StackService"
+        totalCount:
+          type: integer
+        configuredCount:
+          type: integer
+        categories:
+          type: array
+          items:
+            type: string
+      required:
+        - services
+        - totalCount
+        - configuredCount
+        - categories
+
+    TradeDirection:
+      type: string
+      enum: [BUY, SELL]
+
+    Trade:
+      type: object
+      properties:
+        id:
+          type: string
+        symbol:
+          type: string
+          description: e.g. EURUSD, GBPUSD
+        direction:
+          $ref: "#/components/schemas/TradeDirection"
+        lots:
+          type: number
+        openPrice:
+          type: number
+        currentPrice:
+          type: number
+        pnl:
+          type: number
+          description: Unrealised P&L in account currency
+        pnlPct:
+          type: number
+        openedAt:
+          type: string
+        stopLoss:
+          type: ["number", "null"]
+        takeProfit:
+          type: ["number", "null"]
+        source:
+          type: string
+          enum: [AGENT, MANUAL]
+          description: Whether the trade was opened by an agent or manually
+      required:
+        - id
+        - symbol
+        - direction
+        - lots
+        - openPrice
+        - currentPrice
+        - pnl
+        - pnlPct
+        - openedAt
+        - source
+
+    TradeActionResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        tradeId:
+          type: string
+      required:
+        - success
+        - message
+        - tradeId
+
+    IncreaseTradeRequest:
+      type: object
+      properties:
+        lots:
+          type: number
+          description: Additional lots to add to the position
+      required:
+        - lots
+
+    RefreshResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        timestamp:
+          type: string
+      required:
+        - success
+        - message
+        - timestamp
+
+    SentimentLabel:
+      type: string
+      enum: [BULLISH, BEARISH, NEUTRAL]
+
+    SentimentArticle:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        source:
+          type: string
+        url:
+          type: string
+        publishedAt:
+          type: string
+        tickers:
+          type: array
+          items:
+            type: string
+        sentiment:
+          $ref: "#/components/schemas/SentimentLabel"
+        score:
+          type: number
+          description: Confidence score 0-1
+        reasoning:
+          type: string
+      required:
+        - id
+        - title
+        - source
+        - url
+        - publishedAt
+        - tickers
+        - sentiment
+        - score
+        - reasoning
+
+    SentimentReport:
+      type: object
+      properties:
+        overallSentiment:
+          $ref: "#/components/schemas/SentimentLabel"
+        overallScore:
+          type: number
+          description: Weighted score from -1 (bearish) to +1 (bullish)
+        source:
+          type: string
+          description: Data source identifier (polygon+gpt or demo)
+        articles:
+          type: array
+          items:
+            $ref: "#/components/schemas/SentimentArticle"
+        lastUpdated:
+          type: string
+      required:
+        - overallSentiment
+        - overallScore
+        - source
+        - articles
+        - lastUpdated
+
+    AgentServiceStatus:
+      type: object
+      properties:
+        online:
+          type: boolean
+        configured:
+          type: boolean
+          description: Whether PYTHON_AGENT_URL is explicitly set (vs falling back to local default).
+        target:
+          type: string
+          nullable: true
+          description: Brain server host:port (never includes paths or secrets).
+        reason:
+          type: string
+          nullable: true
+          enum: [timeout, refused, dns, reset, http_error, unknown]
+          description: Coarse failure reason when offline.
+        message:
+          type: string
+        health:
+          type: object
+          nullable: true
+        info:
+          type: object
+          nullable: true
+      required:
+        - online
+
+    AgentDecisionResult:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [BUY, SELL, HOLD, FREEZE]
+        symbol:
+          type: string
+        confidence:
+          type: number
+        reasoning:
+          type: string
+        risk_note:
+          type: string
+        timestamp:
+          type: string
+      required:
+        - action
+        - symbol
+        - confidence
+        - reasoning
+        - risk_note
+
+    AgentCycleResult:
+      type: object
+      properties:
+        cycle_id:
+          type: string
+        started_at:
+          type: string
+        finished_at:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [running, completed, failed, frozen]
+        mode:
+          type: string
+        symbols_analyzed:
+          type: array
+          items:
+            type: string
+        decision:
+          $ref: "#/components/schemas/AgentDecisionResult"
+          nullable: true
+        errors:
+          type: array
+          items:
+            type: string
+        duration_ms:
+          type: ["integer", "null"]
+      required:
+        - cycle_id
+        - started_at
+        - status
+        - mode
+
+    AgentSignals:
+      type: object
+      properties:
+        cycle_id:
+          type: string
+        timestamp:
+          type: ["string", "null"]
+        mode:
+          type: string
+        decision:
+          $ref: "#/components/schemas/AgentDecisionResult"
+          nullable: true
+        symbols_analyzed:
+          type: array
+          items:
+            type: string
+        duration_ms:
+          type: ["integer", "null"]
+      required:
+        - cycle_id
+        - mode
+
+    RunCycleRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          default: true
+      required: []
+
+    TradingModeStatus:
+      type: object
+      properties:
+        mode:
+          $ref: "#/components/schemas/TradingState"
+        override_active:
+          type: boolean
+        config_mode:
+          type: string
+        mt5_bridge_configured:
+          type: boolean
+        mt5_native_configured:
+          type: boolean
+      required:
+        - mode
+        - override_active
+        - config_mode
+        - mt5_bridge_configured
+        - mt5_native_configured
+
+    SetModeRequest:
+      type: object
+      properties:
+        mode:
+          $ref: "#/components/schemas/TradingState"
+      required:
+        - mode
+
+    ModeChangeResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        previous_mode:
+          type: string
+        mode:
+          type: string
+        timestamp:
+          type: string
+      required:
+        - success
+        - previous_mode
+        - mode
+        - timestamp
+
+    SchedulerStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+        interval_minutes:
+          type: ["integer", "null"]
+        cycles_completed:
+          type: integer
+        last_run:
+          type: ["string", "null"]
+        message:
+          type: string
+      required:
+        - running
+        - cycles_completed
+
+    SchedulerRequest:
+      type: object
+      properties:
+        interval_minutes:
+          type: integer
+          default: 30
+
+    LivePosition:
+      type: object
+      properties:
+        ticket:
+          type: ["integer", "string"]
+        symbol:
+          type: string
+        type:
+          type: string
+          enum: [BUY, SELL]
+        volume:
+          type: number
+        open_price:
+          type: number
+        current_price:
+          type: number
+        sl:
+          type: number
+        tp:
+          type: number
+        profit:
+          type: number
+        open_time:
+          type: string
+        comment:
+          type: string
+      required:
+        - symbol
+        - type
+        - volume
+        - open_price
+        - profit
+
+    LivePositionsResult:
+      type: object
+      properties:
+        source:
+          type: string
+          enum: [mt5_live, memory]
+        mode:
+          type: string
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LivePosition"
+        count:
+          type: integer
+        account:
+          type: object
+          nullable: true
+      required:
+        - source
+        - mode
+        - positions
+        - count

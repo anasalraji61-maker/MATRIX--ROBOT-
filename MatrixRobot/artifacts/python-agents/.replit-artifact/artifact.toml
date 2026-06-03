@@ -1,0 +1,21 @@
+kind = "api"
+previewPath = "/agents"
+title = "Python Agent Service"
+version = "1.0.0"
+id = "python-agents"
+
+[[services]]
+localPort = 8000
+name = "Python Agents (FastAPI)"
+paths = ["/agents"]
+
+[services.development]
+run = "bash start.sh"
+
+[services.production]
+
+[services.production.build]
+args = ["bash", "start.sh"]
+
+[services.production.health.startup]
+path = "/agents/health"
