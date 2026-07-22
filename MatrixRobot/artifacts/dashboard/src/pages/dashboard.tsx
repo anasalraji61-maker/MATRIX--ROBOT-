@@ -544,7 +544,7 @@ export default function Dashboard() {
                     : "bg-blue-500/10 text-blue-400 border-blue-500/20"
                 }`}
               >
-                {status.tradingState.replace("_", " ")}
+                {(status.tradingState ?? "PAPER_MODE").replace("_", " ")}
               </Badge>
               <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
                 <span className="relative flex h-2.5 w-2.5">
