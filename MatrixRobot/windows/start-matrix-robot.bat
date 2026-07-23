@@ -1,7 +1,7 @@
 @echo off
 setlocal
-set "ROOT=%~dp0.."
-cd /d "%ROOT%"
+cd /d "%~dp0.."
+set "ROOT=%CD%"
 
 REM Ensure generated Zod schemas work on Zod v3
 if exist "lib\api-zod\src\generated\api.ts" (
