@@ -62,6 +62,7 @@ if errorlevel 1 (
 )
 
 REM Public HTTPS tunnel so iPhone works on Asia cell / any network (not Wi-Fi only)
+REM For 24/7 permanent hosting prefer ForexVPS: windows\vps\install-forexvps.bat
 echo Starting public phone tunnel...>> "%LOG%"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-public-tunnel.ps1" >> "%LOG%" 2>&1
 if exist "%URLFILE%" (
