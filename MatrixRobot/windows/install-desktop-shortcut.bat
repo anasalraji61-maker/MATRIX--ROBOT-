@@ -20,9 +20,12 @@ echo   %SHORTCUT%
 echo.
 echo Usage:
 echo   1) Double-click "Matrix Robot" on Desktop
-echo   2) Wait for the popup with laptop + phone URLs
-echo   3) On iPhone (same Wi-Fi), open the phone URL in Safari
+echo   2) Wait for the popup — it includes a public HTTPS phone link
+echo   3) On iPhone (Asia cell / any network), open that link in Safari
 echo   4) Share -^> Add to Home Screen
+echo.
+echo Note: the public link changes each time you start (trycloudflare.com).
+echo       Laptop must stay on and Matrix Robot running for phone access.
 echo.
 pause
 endlocal

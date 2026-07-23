@@ -3,6 +3,8 @@ setlocal EnableExtensions
 cd /d "%~dp0.."
 set "ROOT=%CD%"
 set "LOG=%TEMP%\matrix-robot-start.log"
+set "URLFILE=%TEMP%\matrix-robot-public-url.txt"
+set "PUBLICURL="
 
 echo ===== %DATE% %TIME% =====> "%LOG%"
 echo ROOT=%ROOT%>> "%LOG%"
@@ -59,16 +61,21 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM Detect LAN IP for phone access
-for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /c:"IPv4"') do (
-  for /f "tokens=1" %%B in ("%%A") do set "LANIP=%%B"
+REM Public HTTPS tunnel so iPhone works on Asia cell / any network (not Wi-Fi only)
+echo Starting public phone tunnel...>> "%LOG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-public-tunnel.ps1" >> "%LOG%" 2>&1
+if exist "%URLFILE%" (
+  set /p PUBLICURL=<"%URLFILE%"
 )
-if defined LANIP (
-  echo Phone URL: http://%LANIP%:5173>> "%LOG%"
-  start "" "http://localhost:5173/"
-  powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Matrix Robot يعمل الآن.%0Aاللابتوب: http://localhost:5173%0Aالهاتف (نفس الواي فاي): http://%LANIP%:5173','Matrix Robot')"
+
+start "" "http://localhost:5173/"
+
+if defined PUBLICURL (
+  echo Phone public URL: %PUBLICURL%>> "%LOG%"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; $u = Get-Content -LiteralPath (Join-Path $env:TEMP 'matrix-robot-public-url.txt') -Raw; [System.Windows.MessageBox]::Show(('Matrix Robot يعمل الآن.' + [Environment]::NewLine + [Environment]::NewLine + 'اللابتوب:' + [Environment]::NewLine + 'http://localhost:5173' + [Environment]::NewLine + [Environment]::NewLine + 'الهاتف من أي شبكة (آسيا سيل / بيانات الجوال):' + [Environment]::NewLine + $u.Trim() + [Environment]::NewLine + [Environment]::NewLine + 'افتح الرابط في Safari ثم شارك ← إضافة إلى الشاشة الرئيسية.'), 'Matrix Robot')"
 ) else (
-  start "" "http://localhost:5173/"
+  echo Tunnel failed — see log>> "%LOG%"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('الواجهة تعمل على اللابتوب، لكن فشل إنشاء الرابط العام للهاتف.' + [Environment]::NewLine + 'راجع السجل:' + [Environment]::NewLine + '%LOG%'), 'Matrix Robot')"
 )
 
 endlocal
