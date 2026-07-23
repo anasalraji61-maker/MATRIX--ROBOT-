@@ -1,21 +1,28 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
-set "TARGET=%ROOT%start-matrix-robot-hidden.vbs"
+set "HERE=%~dp0"
+set "TARGET=%HERE%start-matrix-robot-hidden.vbs"
 set "DESKTOP=%USERPROFILE%\Desktop"
 set "SHORTCUT=%DESKTOP%\Matrix Robot.lnk"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$s = (New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%');" ^
+  "$ws = New-Object -ComObject WScript.Shell;" ^
+  "$s = $ws.CreateShortcut('%SHORTCUT%');" ^
   "$s.TargetPath = '%TARGET%';" ^
-  "$s.WorkingDirectory = '%ROOT%';" ^
+  "$s.WorkingDirectory = '%HERE%';" ^
   "$s.WindowStyle = 7;" ^
-  "$s.Description = 'Start Matrix Robot locally';" ^
+  "$s.Description = 'Start Matrix Robot in background';" ^
   "$s.Save()"
 
-echo Desktop shortcut created:
+echo.
+echo Desktop shortcut ready:
 echo   %SHORTCUT%
 echo.
-echo Double-click "Matrix Robot" on the Desktop to start.
+echo Usage:
+echo   1) Double-click "Matrix Robot" on Desktop
+echo   2) Wait for the popup with laptop + phone URLs
+echo   3) On iPhone (same Wi-Fi), open the phone URL in Safari
+echo   4) Share -^> Add to Home Screen
+echo.
 pause
 endlocal
