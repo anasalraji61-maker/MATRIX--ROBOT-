@@ -321,9 +321,10 @@ export default function Dashboard() {
     query: { refetchInterval: 5 * 60 * 1000, queryKey: getGetSentimentQueryKey() },
   });
 
-  const { data: trades, isLoading: tradesLoading } = useGetActiveTrades({
+  const { data: tradesRaw, isLoading: tradesLoading } = useGetActiveTrades({
     query: { refetchInterval: 10000, queryKey: getGetActiveTradesQueryKey() },
   });
+  const trades = Array.isArray(tradesRaw) ? tradesRaw : [];
 
   const { data: agentService } = useGetAgentServiceStatus({
     query: { refetchInterval: 30000, queryKey: getGetAgentServiceStatusQueryKey() },
@@ -544,7 +545,7 @@ export default function Dashboard() {
                     : "bg-blue-500/10 text-blue-400 border-blue-500/20"
                 }`}
               >
-                {(status.tradingState ?? "PAPER_MODE").replace("_", " ")}
+                {(status.tradingState ?? "PAPER_MODE").replace(/_/g, " ")}
               </Badge>
               <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
                 <span className="relative flex h-2.5 w-2.5">
@@ -564,7 +565,7 @@ export default function Dashboard() {
         </section>
 
         {/* Alert Banners */}
-        {status && (
+        {status?.account && (
           <section className="flex flex-col gap-3" data-testid="section-alerts">
             {status.account.dailyDrawdownPct >= status.account.dailyLimitPct && (
               <Alert variant="destructive" className="bg-red-950/50 border-red-900 text-red-200">
@@ -648,10 +649,10 @@ export default function Dashboard() {
                 { key: "mt5", label: "MT5" },
               ] as const
             ).map(({ key: service, label }) => {
-              if (statusLoading || !status) {
+              if (statusLoading || !status?.polygon) {
                 return <Skeleton key={service} className="h-20 rounded-lg" />;
               }
-              const conn = status[service as keyof typeof status] as typeof status.polygon;
+              const conn = status[service as keyof typeof status] as typeof status.polygon | undefined;
               return (
                 <Card
                   key={service}
@@ -660,14 +661,14 @@ export default function Dashboard() {
                 >
                   <CardContent className="p-3 sm:p-4 flex flex-col items-center justify-center text-center gap-2">
                     <div className="flex items-center gap-1.5 font-medium text-xs sm:text-sm text-foreground">
-                      {conn.connected ? (
+                      {conn?.connected ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
                       ) : (
                         <XCircle className="h-3.5 w-3.5 text-red-500" />
                       )}
                       {label}
                     </div>
-                    {conn.latencyMs !== null && conn.latencyMs !== undefined && (
+                    {conn?.latencyMs != null && (
                       <div className="text-[10px] sm:text-xs text-muted-foreground font-mono">
                         {conn.latencyMs}ms
                       </div>
@@ -680,7 +681,7 @@ export default function Dashboard() {
         </section>
 
         {/* API Usage Meters */}
-        {usageStats && (
+        {usageStats?.openrouter && usageStats?.twelve_data && (
           <section data-testid="section-api-usage">
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
               <Activity className="h-4 w-4" />
@@ -814,13 +815,13 @@ export default function Dashboard() {
                     last {strategyScores?.window_trades ?? 50} signals
                   </span>
                 </div>
-                {!strategyScores || strategyScores.scores.length === 0 ? (
+                {!strategyScores || (strategyScores?.scores ?? []).length === 0 ? (
                   <div className="text-xs text-muted-foreground text-center py-4">
                     No data yet — scores accumulate with each trade cycle
                   </div>
                 ) : (
                   <div className="space-y-2.5">
-                    {strategyScores.scores.map((s) => (
+                    {(strategyScores?.scores ?? []).map((s) => (
                       <div key={s.strategy}>
                         <div className="flex justify-between items-center mb-1">
                           <div className="flex items-center gap-1.5">
@@ -933,7 +934,7 @@ export default function Dashboard() {
             Account Metrics
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {statusLoading || !status ? (
+            {statusLoading || !status?.account ? (
               <>
                 <Skeleton className="h-24 rounded-lg" />
                 <Skeleton className="h-24 rounded-lg" />
@@ -1176,7 +1177,7 @@ export default function Dashboard() {
               <Skeleton className="h-32 rounded-xl" />
               <Skeleton className="h-32 rounded-xl" />
             </div>
-          ) : sentiment ? (
+          ) : sentiment?.overallScore != null ? (
             <div className="space-y-3">
               <Card className="bg-card/50 border-border/50" data-testid="card-sentiment-overall">
                 <CardContent className="p-4 sm:p-5 space-y-3">
@@ -1188,8 +1189,8 @@ export default function Dashboard() {
                   </div>
                   <ScoreBar score={sentiment.overallScore} />
                   <p className="text-[10px] text-muted-foreground text-right font-mono">
-                    Score: {sentiment.overallScore > 0 ? "+" : ""}
-                    {sentiment.overallScore.toFixed(3)}
+                    Score: {(sentiment.overallScore ?? 0) > 0 ? "+" : ""}
+                    {(sentiment.overallScore ?? 0).toFixed(3)}
                   </p>
                 </CardContent>
               </Card>
@@ -1214,7 +1215,7 @@ export default function Dashboard() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="p-4 pt-0 space-y-2">
-                  {sentiment.articles.slice(0, 5).map((a) => (
+                  {(sentiment.articles ?? []).slice(0, 5).map((a) => (
                     <div
                       key={a.id}
                       className="flex items-start justify-between gap-2 text-xs py-1.5 border-b border-border/30 last:border-0"
@@ -1252,7 +1253,7 @@ export default function Dashboard() {
                 <Skeleton className="h-16 rounded-lg" />
                 <Skeleton className="h-16 rounded-lg" />
               </>
-            ) : news && news.length > 0 ? (
+            ) : Array.isArray(news) && news.length > 0 ? (
               news.slice(0, 5).map((item) => (
                 <Card
                   key={item.id}
@@ -1667,7 +1668,7 @@ export default function Dashboard() {
                 <Skeleton className="h-24 rounded-lg ml-12 md:ml-0" />
                 <Skeleton className="h-24 rounded-lg ml-12 md:ml-0" />
               </>
-            ) : decisions && decisions.length > 0 ? (
+            ) : Array.isArray(decisions) && decisions.length > 0 ? (
               decisions.slice(0, 5).map((decision) => (
                 <div
                   key={decision.id}

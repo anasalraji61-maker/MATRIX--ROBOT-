@@ -48,13 +48,19 @@ Thumbs.db
 .cache/
 .local/
 
-# Local secrets / runtime
+# Secrets — never commit real env files (keep .env.example only)
 .env
 .env.*
 !.env.example
+.replit
+**/env_template.txt
+artifacts/python-agents/.env
+artifacts/python-agents/.env.*
 
-# Downloaded tunnel binaries (auto-fetched by Windows launchers)
-windows/cloudflared.exe
-**/cloudflared.exe
-artifacts/python-agents/ngrok.exe
-artifacts/python-agents/ngrok_authtoken.txt
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+artifacts/python-agents/.state/

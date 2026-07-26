@@ -220,17 +220,6 @@ router.get("/download/brain-mt5-bridge", (_req, res) => {
   res.sendFile(file);
 });
 
-router.get("/download/brain-execution-variance", (_req, res) => {
-  const file = path.join(BRIDGE_DIR, "tools", "execution_variance.py");
-  if (!fs.existsSync(file)) {
-    res.status(404).json({ error: "File not found" });
-    return;
-  }
-  res.setHeader("Content-Disposition", 'attachment; filename="execution_variance.py"');
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.sendFile(file);
-});
-
 router.get("/download/brain-trading-route", (_req, res) => {
   const file = path.join(BRIDGE_DIR, "routes", "trading.py");
   if (!fs.existsSync(file)) {

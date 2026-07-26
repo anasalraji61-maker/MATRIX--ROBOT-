@@ -1,0 +1,26 @@
+Matrix → QuantConnect port map
+==============================
+
+Phase 1 (next):
+  backtest/engine.py     → ensemble.py   (_score_bar, SL/TP constants)
+  tools/indicators.py    → indicators.py (compute from bar window)
+  tools/ict_smc.py       → ict_smc.py    (analyze from bar window)
+
+Phase 2:
+  tools/mtf.py           → mtf.py
+  tools/session_engine.py → session.py
+  tools/volatility_regime.py → volatility.py
+
+Phase 3:
+  tools/trading_council.py → council.py
+
+Phase 4:
+  tools/risk_batch.py    → risk.py (sync, no MT5/memory)
+  tools/prop_rules.py    → prop_rules.py
+  tools/trade_tiers.py   → trade_tiers.py
+  agents/supervisor_agent.py → supervisor.py
+  tools/emergency_guard.py → emergency.py
+
+Phase 5:
+  tools/correlation.py   → correlation.py
+  config.py defaults     → settings.py

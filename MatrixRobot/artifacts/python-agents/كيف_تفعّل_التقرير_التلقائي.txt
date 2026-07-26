@@ -1,0 +1,42 @@
+═══════════════════════════════════════════════════════════
+  تقرير V11 التلقائي — كل ساعة (تكلفة شبه صفر)
+═══════════════════════════════════════════════════════════
+
+ماذا يفعل؟
+  • كل ساعة يحدّث: V11_TRADE_REVIEW_REPORT.md (الملف الرئيسي — افتحه بـ Notepad)
+  • ينسخ نسخة أرشيف: reports\hourly\V11_REPORT_2026-06-24_19.md
+  • يحذف أرشيف أقدم من 7 أيام تلقائيًا
+
+التكلفة؟
+  • لا GPT ولا OpenRouter — قراءة Postgres + ملف markdown فقط
+  • أقل من ثانية CPU — لا يؤثر على التداول
+
+───────────────────────────────────────────────────────────
+الخطوة 1 — انسخ الملفين إلى VPS:
+  scripts\GENERATE_V11_TRADE_REVIEW.ps1
+  scripts\INSTALL_V11_REPORT_SCHEDULER.ps1
+───────────────────────────────────────────────────────────
+
+الخطوة 2 — تثبيت الجدولة (مرة واحدة، PowerShell كـ Admin):
+
+  cd C:\MatrixRobot\MatrixRobot\MatrixRobot\artifacts\python-agents\scripts
+  powershell -ExecutionPolicy Bypass -File .\INSTALL_V11_REPORT_SCHEDULER.ps1
+
+───────────────────────────────────────────────────────────
+الخطوة 3 — اختبار يدوي (بدون انتظار ساعة):
+
+  powershell -ExecutionPolicy Bypass -File .\GENERATE_V11_TRADE_REVIEW.ps1 -ArchiveHourly
+
+───────────────────────────────────────────────────────────
+لفتح التقرير المحدّث دائمًا:
+
+  notepad C:\MatrixRobot\MatrixRobot\MatrixRobot\artifacts\python-agents\V11_TRADE_REVIEW_REPORT.md
+
+  (أغلق Notepad وافتحه من جديد بعد كل ساعة لرؤية التحديث)
+
+───────────────────────────────────────────────────────────
+إلغاء الجدولة:
+
+  schtasks /Delete /TN MatrixV11HourlyTradeReport /F
+
+═══════════════════════════════════════════════════════════

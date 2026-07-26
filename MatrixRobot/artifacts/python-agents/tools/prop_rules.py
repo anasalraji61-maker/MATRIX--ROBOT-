@@ -3,7 +3,7 @@
 Encodes the firm's hard rules + tracks compliance state every cycle.
 
 FundedNext Stellar 2-Step hard rules (as of 2026):
-  • Max Daily Loss      : 5%  of starting balance (calendar-day, UTC)
+  • Max Daily Loss      : 5%  of starting balance (calendar-day, broker server time)
   • Max Total Loss      : 10% of starting balance (static drawdown)
   • Min Trading Days    : 5 unique calendar days with at least one trade
   • Consistency Rule    : (funded only) biggest single-day P&L ≤ 40% of total profit
@@ -24,13 +24,14 @@ from datetime import datetime, timezone
 
 from config import get_settings
 from tools import memory, account_state
+from tools.prop_time import today_key, seconds_until_prop_server_midnight
 
 
 _DAILY_PNL_LOG_KEY = "prop_daily_pnl_log"
 
 
 def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return today_key()
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -111,6 +112,8 @@ class PropStatus:
     funded_open_risk_cap_pct: float = 3.0     # funded-only hard cap
     news_in_blackout: bool = False            # currently inside ±N min of HIGH news
     news_blackout_reason: str = ""
+    qualified_trades_count: int = 0
+    qualified_trades_required: int = 5
 
     warnings: list = field(default_factory=list)
     violations: list = field(default_factory=list)
@@ -127,19 +130,28 @@ async def evaluate(state: dict | None = None) -> PropStatus:
     if not acct or not acct.get("available"):
         acct = await account_state.refresh_account()
 
+    # Sync memory with MT5 before margin math (no LLM — local bridge only)
+    mode = (state or {}).get("mode") if state else None
+    if mode == "ACTIVE" or s.trading_state == "ACTIVE":
+        try:
+            await account_state.sync_open_positions()
+        except Exception:
+            pass
+
     daily_dd  = float(acct.get("daily_drawdown_pct", 0.0) or 0.0)
     total_dd  = float(acct.get("total_drawdown_pct", 0.0) or 0.0)
     equity    = float(acct.get("equity", 0.0) or 0.0)
     starting  = float(acct.get("starting_balance", 0.0) or 0.0)
 
-    # NEW FN 2026 rules — compute from live open positions
+    # NEW FN 2026 rules — compute from reconciled open positions
     open_positions = memory.retrieve("open_positions") or []
     margin_pct = margin_used_pct(open_positions, equity)
     op_risk_pct = open_risk_pct(open_positions, starting)
-    news_blocked, news_reason = _check_news_blackout(state)
     profile = (s.account_profile or "FN_CHALLENGE").upper()
     is_funded = (profile == "FN_FUNDED") or (s.prop_phase == "FUNDED")
     is_real = (profile == "REAL")
+    news_blocked, news_reason = _check_news_blackout(state, s, profile, is_funded)
+    qualified_count = account_state.qualified_trades_count()
     daily_start = float(acct.get("daily_start_equity", 0.0) or starting)
     profit_pct = float(acct.get("profit_pct", 0.0) or 0.0)
     # Today's realized+unrealized profit as % of STARTING balance (FN's denominator)
@@ -169,14 +181,14 @@ async def evaluate(state: dict | None = None) -> PropStatus:
     block_reason = ""
     can_trade = True
     # Emergency daily lockout takes precedence — set by emergency_guard when
-    # floating daily DD breaches the hard internal cap. Unlocks at UTC midnight.
+    # floating daily DD breaches the hard internal cap. Unlocks at broker/FundedNext server midnight.
     from tools import emergency_guard
     lockout = emergency_guard.get_lockout()
     if lockout:
         can_trade = False
         block_reason = (
             f"DAILY LOCKOUT (auto-liquidated): {lockout.get('reason', 'DD cap hit')} "
-            f"— resumes at UTC midnight"
+            f"— resumes at broker server midnight"
         )
         violations.append(block_reason)
     elif violations:
@@ -200,7 +212,7 @@ async def evaluate(state: dict | None = None) -> PropStatus:
         can_trade = False
         block_reason = (
             f"Daily trade cap reached: {trades_today}/{s.max_trades_per_day} "
-            f"— resets at UTC midnight"
+            f"— resets at broker server midnight"
         )
         warnings.append(block_reason)
     elif daily_profit_pct >= s.max_daily_profit_pct:
@@ -236,6 +248,13 @@ async def evaluate(state: dict | None = None) -> PropStatus:
         can_trade = False
         block_reason = block_reason or f"News blackout: {news_reason}"
         warnings.append(block_reason)
+    elif profile == "FN_CHALLENGE" and not is_funded:
+        cal = (state or {}).get("economic_calendar") or {}
+        if cal.get("in_blackout"):
+            warnings.append(
+                f"News window active (challenge allows trading): "
+                f"{cal.get('blackout_reason', news_reason)}"
+            )
 
     # Consistency warning (funded phase only)
     if s.prop_phase == "FUNDED" and not consistency_ok:
@@ -250,6 +269,11 @@ async def evaluate(state: dict | None = None) -> PropStatus:
             warnings.append(
                 f"Profit target hit ({profit_pct:.2f}%) but only {days}/{s.prop_min_trading_days} "
                 f"trading days completed — keep small trades to satisfy min-days rule"
+            )
+        if qualified_count < s.prop_qualified_trades_required:
+            warnings.append(
+                f"Qualified closed trades: {qualified_count}/{s.prop_qualified_trades_required} "
+                f"(FundedNext min trades for challenge completion)"
             )
 
     return PropStatus(
@@ -288,6 +312,8 @@ async def evaluate(state: dict | None = None) -> PropStatus:
         funded_open_risk_cap_pct=s.prop_funded_open_risk_hard_cap_pct,
         news_in_blackout=news_blocked,
         news_blackout_reason=news_reason,
+        qualified_trades_count=qualified_count,
+        qualified_trades_required=s.prop_qualified_trades_required,
         warnings=warnings,
         violations=violations,
     )
@@ -329,15 +355,45 @@ def margin_used_pct(open_positions: list, equity: float) -> float:
     return (total_margin / equity) * 100.0
 
 
-def _check_news_blackout(state: dict | None) -> tuple[bool, str]:
-    """Return (in_blackout, reason). Uses economic_calendar already populated
-    in state, plus our own ±N min window centered on each HIGH event."""
+def check_news_blackout(
+    state: dict | None,
+    settings=None,
+    profile: str | None = None,
+    is_funded: bool | None = None,
+) -> tuple[bool, str]:
+    """Public wrapper — single policy for news/calendar entry blocking."""
+    s = settings or __import__("config", fromlist=["get_settings"]).get_settings()
+    prof = (profile or getattr(s, "account_profile", "FN_CHALLENGE")).upper()
+    funded = is_funded if is_funded is not None else prof == "FN_FUNDED"
+    return _check_news_blackout(state, s, prof, funded)
+
+
+def _check_news_blackout(
+    state: dict | None,
+    settings=None,
+    profile: str = "FN_CHALLENGE",
+    is_funded: bool = False,
+) -> tuple[bool, str]:
+    """Return (block_new_entries, reason).
+
+    FN_CHALLENGE: news trading allowed — calendar blackout is warning-only.
+    FN_FUNDED: strict block during high-impact window (40% profit split rule).
+    REAL: block during calendar blackout (conservative).
+    """
     if not state:
         return False, ""
     cal = (state.get("economic_calendar") or {})
-    if cal.get("in_blackout"):
-        return True, cal.get("blackout_reason", "Economic calendar blackout")
-    return False, ""
+    if not cal.get("in_blackout"):
+        return False, ""
+    reason = cal.get("blackout_reason", "Economic calendar blackout")
+    prof = (profile or "FN_CHALLENGE").upper()
+    if prof == "FN_CHALLENGE" and not is_funded:
+        return False, reason
+    if is_funded and getattr(settings, "prop_news_strict_funded", True):
+        return True, f"Funded news window — entries blocked ({reason})"
+    if prof == "REAL":
+        return True, reason
+    return True, reason
 
 
 def open_risk_pct(open_positions: list, starting_balance: float) -> float:

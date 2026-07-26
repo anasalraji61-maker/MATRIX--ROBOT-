@@ -20,7 +20,13 @@ from models.schemas import AnalysisResult
 
 async def run(state: dict) -> dict:
     settings = get_settings()
+    from tools.universe_manager import is_full_power
     symbols = state.get("symbols_analyzed", settings.symbol_list)
+
+    # FULL_POWER_DEMO — deterministic ensemble on all symbols (55), council decides after
+    if is_full_power(settings) and getattr(settings, "full_analysis_all_symbols", True):
+        return await _run_ensemble_all(state, symbols, settings)
+
     indicators_map = state.get("indicators", {})
     indicators_summaries = state.get("indicators_summaries", {})
     mtf_map = state.get("mtf", {})
@@ -46,6 +52,27 @@ async def run(state: dict) -> dict:
         else:
             result = _ensemble_analysis(symbol, ind, mtf, ict, vol, sentiment)
 
+        analyses.append(result.model_dump())
+
+    best = _pick_best_signal(analyses)
+    return {**state, "analyses": analyses, "best_analysis": best}
+
+
+async def _run_ensemble_all(state: dict, symbols: list, settings) -> dict:
+    """Full universe ensemble — no per-symbol LLM (FULL_POWER_DEMO)."""
+    indicators_map = state.get("indicators", {})
+    mtf_map = state.get("mtf", {})
+    ict_map = state.get("ict", {})
+    vol_map = state.get("volatility_regimes", {})
+    sentiment = state.get("sentiment", {})
+
+    analyses: list[dict] = []
+    for symbol in symbols:
+        ind = indicators_map.get(symbol, {})
+        result = _ensemble_analysis(
+            symbol, ind, mtf_map.get(symbol, {}),
+            ict_map.get(symbol, {}), vol_map.get(symbol, {}), sentiment,
+        )
         analyses.append(result.model_dump())
 
     best = _pick_best_signal(analyses)

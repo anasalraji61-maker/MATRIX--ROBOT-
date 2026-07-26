@@ -19,8 +19,8 @@ const SECTIONS: Section[] = [
       { name: "OpenRouter.ai", role: "بوابة الوصول لنماذج LLM" },
       { name: "Anthropic Claude 3.5", role: "النموذج الأساسي للقرارات" },
       { name: "OpenAI GPT-4o-mini", role: "النموذج الاحتياطي + تحليل الأخبار" },
-      { name: "Cloudflare (cloudflared)", role: "رابط HTTPS عام للهاتف / الإنترنت" },
-      { name: "ForexVPS", role: "الاستضافة الدائمة (MT5 + Dashboard + API + Brain)" },
+      { name: "Cloudflare (cloudflared)", role: "نفق يربط اللابتوب بـ Replit" },
+      { name: "Contabo VPS S", role: "خادم Windows مستقبلاً (8.50 $/شهر)" },
       { name: "GitHub", role: "مستودع الكود وحفظ النسخ" },
       { name: "Tailscale Funnel", role: "بديل دائم لـ cloudflared (مجاناً)" },
     ],
@@ -66,16 +66,14 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    title: "ForexVPS Stack (24/7)",
-    subtitle: "على ForexVPS — التشغيل الدائم",
+    title: "Laptop Stack",
+    subtitle: "على اللابتوب — مؤقت قبل VPS",
     color: "#fb923c",
     rows: [
-      { name: "MT5 Desktop", role: "يتصل بسيرفر البروكر على الـ VPS" },
-      { name: "mt5_windows_bridge.py", role: "جسر Python على :5555 (localhost)" },
-      { name: "Brain (FastAPI)", role: "وكلاء الذكاء على :8000" },
-      { name: "API + Dashboard", role: "واجهة + API على :8080" },
-      { name: "cloudflared", role: "رابط هاتف عام https://….trycloudflare.com" },
-      { name: "windows\\vps\\start-forexvps.bat", role: "تشغيل الكل بضغطة واحدة" },
+      { name: "MT5 Desktop", role: "يتصل بسيرفر البروكر" },
+      { name: "mt5_windows_bridge.py", role: "جسر Python يحوّل الأوامر لـ MT5" },
+      { name: "cloudflared", role: "نفق يربط اللابتوب بـ Replit" },
+      { name: "START_ALL.bat", role: "يشغّل كل شيء بضغطة واحدة" },
     ],
   },
   {
@@ -121,8 +119,9 @@ const COSTS: Row[] = [
   { name: "Twelve Data", role: "مجاناً (Free tier)" },
   { name: "OpenRouter (GPT/Claude)", role: "~2-5 $/شهر" },
   { name: "MT5 Demo", role: "مجاناً" },
-  { name: "ForexVPS (دائم)", role: "حسب باقة الاشتراك" },
-  { name: "الإجمالي الحالي", role: "VPS + OpenRouter ~2-5 $" },
+  { name: "اللابتوب (كهرباء + إنترنت)", role: "~5 $/شهر" },
+  { name: "الإجمالي الحالي", role: "~7-10 $/شهر" },
+  { name: "+ Contabo VPS (لاحقاً)", role: "+8.50 $/شهر" },
 ];
 
 function escapeHtml(s: string): string {

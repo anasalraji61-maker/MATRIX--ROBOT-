@@ -1,0 +1,164 @@
+================================================================================
+  MATRIX ROBOT V11 — تحضيرات QuantConnect
+  MATRIX_FOR_QC_PREP.txt
+  تاريخ: 2026-07-05
+================================================================================
+
+■ الهدف
+────────────────────────────────────────────────────────────────────────────
+فحص وإرشاد — ليس «إصلاح تلقائي». QuantConnect يختبر المنطق الذي ننقله
+(port) من Matrix ويعطي أرقاماً ومقترحات؛ أنت تطبّق التعديلات في Matrix/VPS.
+
+■ نسبة التغطية التقريبية
+────────────────────────────────────────────────────────────────────────────
+  ~55–60%  → QuantConnect (backtest تاريخي)
+  ~40–45%  → منصات أخرى (GPT live، scalp حي، MT5، سجلات VPS) — لاحقاً
+
+================================================================================
+1) ما يفحصه QuantConnect (بعد الـ port)
+================================================================================
+
+  الطبقة                    مصدر Matrix                         مرحلة Port
+  ─────────────────────────────────────────────────────────────────────────
+  Ensemble (مؤشرات)         agents/analysis_agent.py            1
+                            tools/indicators.py
+  ICT / SMC                 tools/ict_smc.py                    1
+  Backtest scoring          backtest/engine.py (_score_bar)     1
+  MTF consensus             tools/mtf.py                        2
+  Volatility regime         tools/volatility_regime.py          2
+  Session / killzones       tools/session_engine.py             2
+  Trading Council           tools/trading_council.py            3
+  Risk batch (مبسّط)        tools/risk_batch.py                 4
+  Prop rules                tools/prop_rules.py                 4
+  Trade tiers               tools/trade_tiers.py                4
+  Supervisor                agents/supervisor_agent.py          4
+  Emergency guard           tools/emergency_guard.py            4
+  Correlation guard         tools/correlation.py                5
+  Portfolio متعدد الرموز    config.symbol_list                  5
+
+================================================================================
+2) ما لا يُفحص في QuantConnect (منصات أخرى لاحقاً)
+================================================================================
+
+  • agentic_brain / GPT / OpenRouter / Gemini
+  • MT5 Bridge + تنفيذ وسيط حقيقي + انزلاق
+  • scalping_engine + scalp_strategies (مسار منفصل — دقة أعلى)
+  • memory / Supabase / دورات VPS الحية
+  • data_agent + Twelve Data (QC يستخدم بياناته الخاصة)
+  • position_reconciler مع MT5
+
+  ملاحظة: ensemble في Matrix = البديل الحتمي عندما لا يوجد LLM — وهذا ما
+  نختبره أولاً في QC (يطابق فلسفة backtest/engine.py).
+
+================================================================================
+3) المطلوب منك قبل أول backtest
+================================================================================
+
+  [أ] حساب QuantConnect
+      • تسجيل على https://www.quantconnect.com
+      • Organization + مشروع Algorithm (Python)
+
+  [ب] اختيار بيئة التشغيل (واحدة)
+      • المتصفح — Cloud Backtest (الأسهل للبداية)
+      • Lean CLI محلياً — يحتاج User ID + API Token من صفحة الحساب
+
+  [ج] لا نرفع أسرار Matrix إلى QC
+      • لا مفاتيح API، لا .env، لا MT5 credentials
+      • ننقل المنطق والأرقام الافتراضية من config.py فقط (قيم عامة)
+
+  [د] قرارات إعداد (أنت تختار — لا نفرض تواريخ ولا رموز محددة هنا)
+      • فترة الاختبار: من واجهة QC عند إنشاء/تشغيل الـ backtest
+      • الرموز: كل ما في settings.symbol_list أو subset تختاره
+      • الإطار الزمني: H1 افتراضي (يطابق Matrix intraday) — قابل للتغيير
+      • profile: FN_CHALLENGE | FN_FUNDED | REAL (من config)
+
+  [هـ] موافقة خطوة بخطوة
+      • أي تعديل على Matrix/VPS/.env — فقط بعد موافقتك الصريحة
+
+================================================================================
+4) خريطة الملفات — Matrix → مشروع QC
+================================================================────────────────
+
+  Matrix (المصدر)                              QC (الهدف)
+  ─────────────────────────────────────────────────────────────────────────
+  backtest/engine.py                           matrix_layers/ensemble.py
+  tools/indicators.py                          matrix_layers/indicators.py
+  tools/ict_smc.py                             matrix_layers/ict_smc.py
+  tools/trading_council.py                     matrix_layers/council.py
+  tools/risk_batch.py (+ تبسيط)                matrix_layers/risk.py
+  tools/prop_rules.py                          matrix_layers/prop_rules.py
+  tools/session_engine.py                      matrix_layers/session.py
+  tools/mtf.py                                 matrix_layers/mtf.py
+  config.py (قيم افتراضية فقط)                 matrix_layers/settings.py
+  agents/graph.py (ترتيب الطبقات)              main.py (QCAlgorithm)
+
+  مجلد المشروع المحلي:
+    quantconnect/MatrixRobotQC/
+
+================================================================================
+5) مراحل التنفيذ (بالترتيب)
+================================================================================
+
+  المرحلة 0 — تحضير (الآن)
+    ✓ MATRIX_FOR_QC_PREP.txt
+    ✓ هيكل quantconnect/MatrixRobotQC/
+    ✓ main.py هيكل أولي
+    ⏳ موافقتك للمتابعة
+
+  المرحلة 1 — Ensemble + ICT
+    • port _score_bar + مؤشرات + ICT
+    • backtest أحادي الرمز
+    • مقارنة مع Matrix backtest API (نفس المنطق)
+
+  المرحلة 2 — Session + MTF + Volatility
+    • إضافة فلاتر الجلسة والمحاذاة متعددة الإطارات
+
+  المرحلة 3 — Council
+    • 7 عقول + Meta Judge
+    • تقرير: كم مرشحاً رُفض ولماذا
+
+  المرحلة 4 — Risk + Supervisor + Emergency
+    • قواعد FundedNext مبسّطة (بدون MT5 bridge)
+    • approved_trades محاكاة
+
+  المرحلة 5 — Portfolio
+    • كل الرموز من الإعدادات
+    • correlation + حدود المحفظة
+    • تقرير per-symbol + إجمالي
+
+  المرحلة 6 — إرشاد
+    • مقترحات تعديل (معاملات، عتبات، أوزان council)
+    • أنت تنفّذ في Matrix
+
+================================================================================
+6) مخرجات الفحص (ما ستحصل عليه)
+================================================================================
+
+  • Profit Factor، Win Rate، Max Drawdown لكل رمز
+  • عدد الصفقات المرفوضة لكل طبقة (council vs risk)
+  • أي رمز يجرّ المحفظة للأسفل
+  • مقارنة تشغيل «ensemble فقط» vs «ensemble + council + risk»
+  • قائمة مقترحات — ليست تعديلات تلقائية على VPS
+
+================================================================================
+7) خط أنابيب Matrix (مرجع — agents/graph.py)
+================================================================================
+
+  emergency → position_manager → data → sentiment → analysis →
+  council → risk → supervisor → execution
+  (+ scalping_engine مسار منفصل)
+
+  في QC نحاكي:
+    analysis(ensemble) → council → risk → supervisor → simulated execution
+
+================================================================================
+8) الخطوة التالية
+================================================================================
+
+  1. افتح QuantConnect وأنشئ مشروع Python جديد (أو ارفع مجلد MatrixRobotQC).
+  2. أخبرنا: Cloud فقط أم Lean CLI محلياً؟
+  3. وافق على بدء المرحلة 1 (port ensemble + ICT).
+
+  لا حاجة لرفع المشروع كاملاً — ننقل الطبقات تدريجياً.
+
+================================================================================

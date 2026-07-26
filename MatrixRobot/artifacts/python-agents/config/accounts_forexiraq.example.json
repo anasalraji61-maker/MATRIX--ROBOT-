@@ -1,0 +1,17 @@
+[
+  {
+    "id": "forexiraq_real",
+    "label": "ForexIraq Real",
+    "bridge_url": "http://127.0.0.1:5556",
+    "account_profile": "REAL",
+    "enabled": false,
+    "starting_balance": 78,
+    "risk_per_trade_pct": 2.5,
+    "max_daily_drawdown_pct": 8.0,
+    "max_total_drawdown_pct": 15.0,
+    "max_concurrent_positions": 5,
+    "max_trades_per_day": 40,
+    "min_conviction_threshold": 0.55,
+    "symbols": ""
+  }
+]

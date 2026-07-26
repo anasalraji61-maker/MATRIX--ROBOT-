@@ -12,9 +12,16 @@ REM ============================================
 REM   STEP 1: Edit these 3 lines with your
 REM   ForexIraq MT5 credentials, then save.
 REM ============================================
-set "MT5_LOGIN=PUT_YOUR_FOREXIRAQ_LOGIN_HERE"
+set "MT5_LOGIN=1000301"
 set "MT5_PASSWORD=PUT_YOUR_FOREXIRAQ_PASSWORD_HERE"
-set "MT5_SERVER=PUT_YOUR_FOREXIRAQ_SERVER_HERE"
+set "MT5_SERVER=ForexIraqMyrtle-Server"
+REM MUST be a SEPARATE MT5 install (not the FN Demo terminal64.exe on 5555).
+REM Example portable: C:\MT5_ForexIraq\terminal64.exe
+set "MT5_TERMINAL_PATH=C:\MT5_ForexIraq\terminal64.exe"
+
+REM Same secret as MT5_BRIDGE_SECRET in python-agents\.env (leave empty to
+REM auto-load from .env in this folder — works if you run from python-agents)
+set "MT5_BRIDGE_SECRET="
 
 REM Port for this 2nd bridge (must NOT clash with FundedNext bridge on 5555)
 set "BRIDGE_PORT=5556"

@@ -35,6 +35,7 @@ REM ---- 3) Install dependencies ----
 echo [setup] Installing dependencies (first run can take a few minutes)...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt --quiet
+".venv\Scripts\python.exe" -m pip install pytest-asyncio --quiet
 echo [setup] Dependencies ready.
 echo.
 

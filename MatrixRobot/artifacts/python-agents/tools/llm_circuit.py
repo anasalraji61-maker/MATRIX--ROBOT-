@@ -26,6 +26,16 @@ def trip_openrouter(reason: str = "") -> None:
     logger.warning(
         f"OpenRouter circuit OPEN for {_COOLDOWN_SECONDS//60} min — {reason}"
     )
+    try:
+        import asyncio
+        from tools import telegram_alerts
+        from config import get_settings
+        if get_settings().has_telegram:
+            asyncio.get_event_loop().create_task(
+                telegram_alerts.alert_openrouter_circuit(reason)
+            )
+    except Exception:
+        pass
 
 
 def is_credit_or_auth_error(exc: BaseException) -> bool:

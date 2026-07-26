@@ -1,26 +1,69 @@
 """
 MetaTrader 5 bridge.
 
-Priority order:
+Priority order (ACTIVE mode):
   1. MT5_BRIDGE_URL set → HTTP bridge (Linux/remote → Windows MT5 server)
-  2. MetaTrader5 Python lib available → native (Windows only)
-  3. Fallback → paper simulation
+  2. MetaTrader5 Python lib → native (Windows only, opt-in when bridge configured)
+  3. Fail-closed if bridge configured but unreachable (no silent native fallback)
+
+Non-ACTIVE modes (PAPER_MODE / FROZEN): paper simulation only — no live orders.
 
 Run `mt5_windows_bridge.py` on the Windows machine to expose the HTTP API.
 """
 import os
 import random
 import uuid
+import asyncio
 import httpx
 from datetime import datetime, timezone
 from config import get_settings
 from models.schemas import ExecutionResult
+from tools import bridge_circuit
+
+_MAX_BRIDGE_RETRIES = 2
+
+
+async def _http_with_retry(method: str, url: str, **kwargs) -> httpx.Response:
+    """HTTP call with retries + circuit breaker."""
+    bridge_base = url.split("/trade")[0].split("/account")[0].split("/positions")[0]
+    if bridge_circuit.is_open(bridge_base):
+        raise httpx.HTTPError(f"Bridge circuit open: {bridge_base}")
+
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_BRIDGE_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10, headers=_bridge_headers()) as client:
+                if method == "GET":
+                    r = await client.get(url, **kwargs)
+                else:
+                    r = await client.post(url, **kwargs)
+                r.raise_for_status()
+                bridge_circuit.record_success(bridge_base)
+                return r
+        except Exception as e:
+            last_exc = e
+            tripped = bridge_circuit.record_failure(bridge_base, str(e))
+            if tripped and bridge_circuit.should_alert(bridge_base):
+                try:
+                    from tools import telegram_alerts
+                    if get_settings().has_telegram:
+                        asyncio.create_task(
+                            telegram_alerts.alert_bridge_open(bridge_base, str(e)[:200])
+                        )
+                except Exception:
+                    pass
+            if attempt < _MAX_BRIDGE_RETRIES:
+                await asyncio.sleep(1.5 * (attempt + 1))
+    raise last_exc or httpx.HTTPError("bridge request failed")
 
 
 def _bridge_headers() -> dict:
     """Auth headers for the MT5 bridge. Sends X-Bridge-Secret when
     MT5_BRIDGE_SECRET is configured (required for public VPS deployment)."""
     secret = os.getenv("MT5_BRIDGE_SECRET", "")
+    if not secret:
+        # On VPS the secret lives in .env (settings), not os.environ
+        secret = getattr(get_settings(), "mt5_bridge_secret", "") or ""
     return {"X-Bridge-Secret": secret} if secret else {}
 
 _mt5_available = False
@@ -43,35 +86,160 @@ async def _http_open(
     sl: float,
     tp: float,
 ) -> dict:
-    async with httpx.AsyncClient(timeout=10, headers=_bridge_headers()) as client:
-        r = await client.post(
-            f"{bridge_url}/trade/open",
-            json={"symbol": symbol, "action": action, "volume": lots,
-                  "price": 0, "sl": sl, "tp": tp},
-        )
-        r.raise_for_status()
-        return r.json()
+    r = await _http_with_retry(
+        "POST",
+        f"{bridge_url}/trade/open",
+        json={"symbol": symbol, "action": action, "volume": lots,
+              "price": 0, "sl": sl, "tp": tp},
+    )
+    return r.json()
 
 
 async def _http_close(bridge_url: str, ticket: int) -> dict:
-    async with httpx.AsyncClient(timeout=10, headers=_bridge_headers()) as client:
-        r = await client.post(f"{bridge_url}/trade/close", json={"ticket": ticket})
-        r.raise_for_status()
-        return r.json()
+    r = await _http_with_retry(
+        "POST", f"{bridge_url}/trade/close", json={"ticket": ticket},
+    )
+    return r.json()
 
 
 async def _http_account(bridge_url: str) -> dict:
-    async with httpx.AsyncClient(timeout=5, headers=_bridge_headers()) as client:
-        r = await client.get(f"{bridge_url}/account")
-        r.raise_for_status()
-        return r.json()
+    r = await _http_with_retry("GET", f"{bridge_url}/account")
+    return r.json()
 
 
 async def _http_positions(bridge_url: str) -> list:
-    async with httpx.AsyncClient(timeout=5, headers=_bridge_headers()) as client:
-        r = await client.get(f"{bridge_url}/positions")
-        r.raise_for_status()
-        return r.json().get("positions", [])
+    r = await _http_with_retry("GET", f"{bridge_url}/positions")
+    return r.json().get("positions", [])
+
+
+async def _http_modify(bridge_url: str, ticket: int, sl: float, tp: float) -> dict:
+    r = await _http_with_retry(
+        "POST",
+        f"{bridge_url}/position/modify",
+        json={"ticket": ticket, "sl": sl, "tp": tp},
+    )
+    return r.json()
+
+
+async def _http_symbol_info(bridge_url: str, symbol: str) -> dict:
+    r = await _http_with_retry("GET", f"{bridge_url.rstrip('/')}/symbol/info/{symbol}")
+    return r.json()
+
+
+async def verify_position_sltp(
+    bridge_url: str,
+    ticket: int,
+    expected_sl: float,
+    expected_tp: float = 0.0,
+    *,
+    tol: float = 1e-4,
+) -> dict:
+    """Confirm SL/TP attached on live position. Returns {verified, sl, tp, ...}."""
+    try:
+        positions = await _http_positions(bridge_url)
+    except Exception as e:
+        return {"verified": False, "reason": str(e)}
+    for p in positions:
+        tid = p.get("ticket") or p.get("trade_id")
+        if str(tid) != str(ticket):
+            continue
+        sl = float(p.get("sl") or p.get("stop_loss") or 0)
+        tp = float(p.get("tp") or p.get("take_profit") or 0)
+        sl_ok = expected_sl > 0 and sl > 0 and abs(sl - expected_sl) <= max(tol, abs(expected_sl) * 1e-5)
+        tp_ok = expected_tp <= 0 or (tp > 0 and abs(tp - expected_tp) <= max(tol, abs(expected_tp) * 1e-5))
+        return {
+            "verified": sl_ok and tp_ok,
+            "sl": sl,
+            "tp": tp,
+            "sl_ok": sl_ok,
+            "tp_ok": tp_ok,
+            "ticket": ticket,
+        }
+    return {"verified": False, "reason": f"Position {ticket} not found on bridge"}
+
+
+def _verify_native_sltp(ticket: int, expected_sl: float, expected_tp: float = 0.0, *, tol: float = 1e-4) -> dict:
+    """Confirm SL/TP on a native MT5 position."""
+    if not _mt5_available or not mt5:
+        return {"verified": False, "reason": "native MT5 unavailable"}
+    positions = mt5.positions_get(ticket=int(ticket))
+    if not positions:
+        return {"verified": False, "reason": f"Position {ticket} not found"}
+    pos = positions[0]
+    sl = float(pos.sl or 0)
+    tp = float(pos.tp or 0)
+    sl_ok = expected_sl > 0 and sl > 0 and abs(sl - expected_sl) <= max(tol, abs(expected_sl) * 1e-5)
+    tp_ok = expected_tp <= 0 or (tp > 0 and abs(tp - expected_tp) <= max(tol, abs(expected_tp) * 1e-5))
+    return {"verified": sl_ok and tp_ok, "sl": sl, "tp": tp, "sl_ok": sl_ok, "tp_ok": tp_ok, "ticket": ticket}
+
+
+def _native_modify_sltp(ticket: int, sl: float, tp: float) -> bool:
+    if not _mt5_available or not mt5:
+        return False
+    positions = mt5.positions_get(ticket=int(ticket))
+    if not positions:
+        return False
+    pos = positions[0]
+    result = mt5.order_send({
+        "action": mt5.TRADE_ACTION_SLTP,
+        "position": int(ticket),
+        "symbol": pos.symbol,
+        "sl": sl,
+        "tp": tp,
+    })
+    return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+
+
+def _native_close(ticket: int) -> bool:
+    if not _mt5_available or not mt5:
+        return False
+    positions = mt5.positions_get(ticket=int(ticket))
+    if not positions:
+        return False
+    pos = positions[0]
+    close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+    tick = mt5.symbol_info_tick(pos.symbol)
+    price = tick.bid if pos.type == 0 else tick.ask
+    result = mt5.order_send({
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": pos.symbol,
+        "volume": pos.volume,
+        "type": close_type,
+        "position": int(ticket),
+        "price": price,
+        "magic": 20250518,
+        "comment": "matrix-sltp-rollback",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    })
+    return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+
+
+def _bridge_fallback_blocked(settings, bridge_url: str, exc: Exception | None = None) -> ExecutionResult | None:
+    """When bridge URL is set, native fallback is opt-in only."""
+    if not bridge_url:
+        return None
+    if not getattr(settings, "active_allow_native_mt5", False):
+        detail = f" ({exc})" if exc else ""
+        return ExecutionResult(
+            executed=False,
+            mode="ACTIVE",
+            message=f"Bridge configured but unreachable; native fallback disabled{detail}",
+        )
+    return None
+
+
+async def fetch_position_close(position_id: int, bridge_url: str, days: int = 7) -> dict:
+    """Return closing deal details for a position ticket (SL/TP/exit/pnl)."""
+    url = (bridge_url or "").rstrip("/")
+    if not url:
+        return {"found": False, "position_id": position_id}
+    r = await _http_with_retry(
+        "GET",
+        f"{url}/history/position/{int(position_id)}",
+        params={"days": int(days)},
+    )
+    return r.json()
 
 
 # ──────────────────────────────────────────────────────────
@@ -236,28 +404,72 @@ async def open_trade(
         try:
             data = await _http_open(bridge_url, symbol, action, lots, stop_loss_price, take_profit_price)
             if data.get("success"):
+                ticket = data.get("ticket")
+                sltp_ok = True
+                sltp_note = ""
+                if getattr(settings, "active_verify_sltp_after_open", True) and stop_loss_price > 0:
+                    check = await verify_position_sltp(
+                        bridge_url, int(ticket), stop_loss_price, take_profit_price,
+                    )
+                    if not check.get("verified"):
+                        await _http_modify(
+                            bridge_url, int(ticket), stop_loss_price, take_profit_price,
+                        )
+                        check = await verify_position_sltp(
+                            bridge_url, int(ticket), stop_loss_price, take_profit_price,
+                        )
+                    if not check.get("verified") or float(check.get("sl") or 0) <= 0:
+                        sltp_ok = False
+                        sltp_note = check.get("reason", "SL not verified on position")
+                        try:
+                            await _http_close(bridge_url, int(ticket))
+                        except Exception:
+                            pass
+                        return ExecutionResult(
+                            executed=False, mode=mode,
+                            message=f"SL/TP verification failed — order rolled back: {sltp_note}",
+                        )
+                    sltp_note = "SL/TP verified"
                 return ExecutionResult(
                     executed=True,
                     mode=mode,
-                    trade_id=str(data.get("ticket", "")),
+                    trade_id=str(ticket),
                     symbol=symbol,
                     action=action,
                     lots=lots,
                     entry_price=data.get("price", 0),
                     stop_loss=stop_loss_price,
                     take_profit=take_profit_price,
-                    message=f"Order filled via bridge: #{data.get('ticket')}",
+                    message=f"Order filled via bridge: #{ticket}" + (f" ({sltp_note})" if sltp_note else ""),
                     timestamp=datetime.now(timezone.utc).isoformat(),
                 )
             else:
+                if data.get("manual_check_required"):
+                    from tools.bridge_manual import record_manual_check_required
+                    await record_manual_check_required(symbol, data)
+                    return ExecutionResult(
+                        executed=False, mode=mode, symbol=symbol, action=action,
+                        manual_check_required=True,
+                        message=(
+                            "CRITICAL: MT5 order may have opened but ticket unresolved — "
+                            "check MT5 manually; new trades blocked"
+                        ),
+                    )
                 return ExecutionResult(
                     executed=False, mode=mode,
                     message=f"Bridge error: {data.get('comment','unknown')} (retcode {data.get('retcode')})",
                 )
-        except Exception:
-            pass  # Bridge unreachable — fall through to native MT5
+        except Exception as exc:
+            blocked = _bridge_fallback_blocked(settings, bridge_url, exc)
+            if blocked:
+                return blocked
 
     # 2 — Native MT5 (Windows)
+    if bridge_url and not getattr(settings, "active_allow_native_mt5", False):
+        return ExecutionResult(
+            executed=False, mode=mode,
+            message="Bridge configured — native MT5 path disabled (set active_allow_native_mt5=true to override)",
+        )
     if not settings.has_mt5:
         return ExecutionResult(
             executed=False, mode=mode,
@@ -286,12 +498,26 @@ async def open_trade(
             "type_filling": mt5.ORDER_FILLING_IOC,
         })
         if result.retcode == mt5.TRADE_RETCODE_DONE:
+            ticket = int(result.order)
+            sltp_note = ""
+            if getattr(settings, "active_verify_sltp_after_open", True) and stop_loss_price > 0:
+                check = _verify_native_sltp(ticket, stop_loss_price, take_profit_price)
+                if not check.get("verified"):
+                    _native_modify_sltp(ticket, stop_loss_price, take_profit_price)
+                    check = _verify_native_sltp(ticket, stop_loss_price, take_profit_price)
+                if not check.get("verified") or float(check.get("sl") or 0) <= 0:
+                    _native_close(ticket)
+                    return ExecutionResult(
+                        executed=False, mode=mode,
+                        message=f"Native SL/TP verification failed — order rolled back: {check.get('reason', 'SL missing')}",
+                    )
+                sltp_note = "SL/TP verified"
             return ExecutionResult(
                 executed=True, mode=mode,
-                trade_id=str(result.order), symbol=symbol, action=action,
+                trade_id=str(ticket), symbol=symbol, action=action,
                 lots=lots, entry_price=price,
                 stop_loss=stop_loss_price, take_profit=take_profit_price,
-                message=f"Order filled: #{result.order}",
+                message=f"Order filled: #{ticket}" + (f" ({sltp_note})" if sltp_note else ""),
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         return ExecutionResult(executed=False, mode=mode,
@@ -314,8 +540,12 @@ async def close_trade(trade_id: str, mode: str, bridge_url: str | None = None) -
         try:
             data = await _http_close(bridge_url, int(trade_id))
             return data
-        except Exception:
-            pass  # Bridge unreachable — fall through to native MT5
+        except Exception as exc:
+            if bridge_url and not getattr(settings, "active_allow_native_mt5", False):
+                return {"success": False, "message": f"Bridge configured but unreachable; native fallback disabled ({exc})"}
+
+    if bridge_url and not getattr(settings, "active_allow_native_mt5", False):
+        return {"success": False, "message": "Bridge configured — native close disabled"}
 
     # Native MT5 close
     if _mt5_available and settings.has_mt5 and _init_mt5():
@@ -351,6 +581,17 @@ async def close_trade(trade_id: str, mode: str, bridge_url: str | None = None) -
     return {"success": False, "message": "No MT5 connection available"}
 
 
+def _native_read_allowed(settings, bridge_url: str) -> bool:
+    """In ACTIVE with bridge configured, block native MT5 reads unless opt-in."""
+    if not bridge_url:
+        return True
+    if getattr(settings, "active_allow_native_mt5", False):
+        return True
+    if str(getattr(settings, "trading_state", "")).upper() == "ACTIVE":
+        return False
+    return True
+
+
 async def get_live_account(bridge_url: str | None = None) -> dict | None:
     """Fetch real account info from bridge or native MT5."""
     settings = get_settings()
@@ -359,7 +600,10 @@ async def get_live_account(bridge_url: str | None = None) -> dict | None:
         try:
             return await _http_account(bridge_url)
         except Exception:
-            pass  # Bridge unreachable — fall through to native MT5
+            if not _native_read_allowed(settings, bridge_url):
+                return None
+    elif not _native_read_allowed(settings, bridge_url):
+        return None
     if _mt5_available and settings.has_mt5 and _init_mt5():
         info = mt5.account_info()
         mt5.shutdown()
@@ -382,7 +626,10 @@ async def get_live_positions(bridge_url: str | None = None) -> list:
         try:
             return await _http_positions(bridge_url)
         except Exception:
-            pass  # Bridge unreachable — fall through to native MT5
+            if not _native_read_allowed(settings, bridge_url):
+                return []
+    elif not _native_read_allowed(settings, bridge_url):
+        return []
     if _mt5_available and settings.has_mt5 and _init_mt5():
         positions = mt5.positions_get() or []
         mt5.shutdown()
@@ -402,3 +649,48 @@ async def get_live_positions(bridge_url: str | None = None) -> list:
             for p in positions
         ]
     return []
+
+
+async def modify_position(
+    ticket: int,
+    sl: float,
+    tp: float,
+    mode: str = "ACTIVE",
+    bridge_url: str | None = None,
+) -> dict:
+    """Modify SL/TP on an open position via bridge or native MT5."""
+    settings = get_settings()
+    if mode != "ACTIVE":
+        return {"success": True, "mode": mode, "message": "Paper modify simulated"}
+
+    bridge_url = (bridge_url or settings.mt5_bridge_url or "").rstrip("/")
+    if bridge_url:
+        try:
+            data = await _http_modify(bridge_url, int(ticket), sl, tp)
+            return {"success": True, **data}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    if _mt5_available and settings.has_mt5 and _init_mt5():
+        try:
+            positions = mt5.positions_get(ticket=int(ticket))
+            if not positions:
+                return {"success": False, "message": f"Position {ticket} not found"}
+            pos = positions[0]
+            result = mt5.order_send({
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": pos.ticket,
+                "symbol": pos.symbol,
+                "sl": sl,
+                "tp": tp if tp > 0 else pos.tp,
+            })
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                return {"success": True, "ticket": ticket, "sl": sl, "tp": tp}
+            return {"success": False, "message": getattr(result, "comment", "modify failed")}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+        finally:
+            if mt5:
+                mt5.shutdown()
+
+    return {"success": False, "message": "No MT5 connection available"}

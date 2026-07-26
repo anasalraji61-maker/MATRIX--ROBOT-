@@ -106,17 +106,79 @@ function writeHeaders(): Record<string, string> {
 
 async function proxyGet(
   path: string
-): Promise<{ ok: boolean; data: unknown; reason?: FailureReason }> {
+): Promise<{ ok: boolean; data: unknown; reason?: FailureReason; status?: number }> {
   try {
     const res = await fetch(`${PYTHON_URL}/agents${path}`, {
       headers: READ_HEADERS,
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return { ok: false, data: null, reason: "http_error" };
+    if (!res.ok) return { ok: false, data: null, reason: "http_error", status: res.status };
     return { ok: true, data: await res.json() };
   } catch (err) {
     return { ok: false, data: null, reason: classifyFetchError(err) };
   }
+}
+
+/** Graceful GET fallbacks when the Python brain is offline (dashboard must not crash). */
+function offlineGetFallback(path: string): unknown | null {
+  const now = new Date().toISOString();
+  switch (path) {
+    case "/cycle/status":
+      return {
+        cycle_id: "offline",
+        started_at: now,
+        finished_at: null,
+        status: "completed",
+        mode: "PAPER_MODE",
+        symbols_analyzed: [],
+        decision: null,
+        errors: ["Python agent service offline — start python-agents on port 8000"],
+        duration_ms: null,
+      };
+    case "/mode":
+      return {
+        mode: "PAPER_MODE",
+        override_active: false,
+        config_mode: "PAPER_MODE",
+        mt5_bridge_configured: false,
+        mt5_native_configured: false,
+      };
+    case "/scheduler/status":
+      return {
+        running: false,
+        interval_minutes: null,
+        cycles_completed: 0,
+        last_run: null,
+        message: "Python agent service offline",
+      };
+    case "/positions/live":
+      return {
+        source: "memory",
+        mode: "PAPER_MODE",
+        positions: [],
+        count: 0,
+        account: null,
+      };
+    default:
+      return null;
+  }
+}
+
+function respondGetOrFallback(
+  res: Response,
+  path: string,
+  result: { ok: boolean; data: unknown; reason?: FailureReason; status?: number },
+): void {
+  if (result.ok) {
+    res.json(result.data);
+    return;
+  }
+  const fallback = offlineGetFallback(path);
+  if (fallback) {
+    res.json(fallback);
+    return;
+  }
+  res.status(503).json({ error: "Python agent service unavailable" });
 }
 
 async function proxyPost(
@@ -211,12 +273,7 @@ router.post("/agents/cycle/run", requireAdminSecret, async (req, res): Promise<v
 router.get("/agents/cycle/status", async (req, res): Promise<void> => {
   req.log.info("Fetching agent cycle status");
   const result = await proxyGet("/cycle/status");
-
-  if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
-    return;
-  }
-  res.json(result.data);
+  respondGetOrFallback(res, "/cycle/status", result);
 });
 
 // ── Latest signals ───────────────────────────────────────────
@@ -226,7 +283,7 @@ router.get("/agents/signals", async (req, res): Promise<void> => {
   const result = await proxyGet("/signals");
 
   if (!result.ok) {
-    res.status(503).json({ error: "No signals available" });
+    res.json({ signals: [], updated_at: new Date().toISOString() });
     return;
   }
   res.json(result.data);
@@ -237,7 +294,7 @@ router.get("/agents/signals", async (req, res): Promise<void> => {
 router.get("/agents/state", async (req, res): Promise<void> => {
   const result = await proxyGet("/state");
   if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
+    res.json({ mode: "PAPER_MODE", cycle_id: null, analyses: [], errors: [] });
     return;
   }
   res.json(result.data);
@@ -247,11 +304,7 @@ router.get("/agents/state", async (req, res): Promise<void> => {
 
 router.get("/agents/mode", async (req, res): Promise<void> => {
   const result = await proxyGet("/mode");
-  if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
-    return;
-  }
-  res.json(result.data);
+  respondGetOrFallback(res, "/mode", result);
 });
 
 router.post("/agents/mode", requireAdminSecret, async (req, res): Promise<void> => {
@@ -268,11 +321,7 @@ router.post("/agents/mode", requireAdminSecret, async (req, res): Promise<void> 
 
 router.get("/agents/scheduler/status", async (req, res): Promise<void> => {
   const result = await proxyGet("/scheduler/status");
-  if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
-    return;
-  }
-  res.json(result.data);
+  respondGetOrFallback(res, "/scheduler/status", result);
 });
 
 router.post("/agents/scheduler/start", requireAdminSecret, async (req, res): Promise<void> => {
@@ -296,7 +345,7 @@ router.post("/agents/scheduler/stop", requireAdminSecret, async (req, res): Prom
   res.json(result.data);
 });
 
-// ── FN compliance + analytics + execution variance ────────────
+// ── FN compliance + analytics ────────────────────────────────
 
 router.get("/agents/prop-status", async (req, res): Promise<void> => {
   const result = await proxyGet("/prop-status");
@@ -316,21 +365,26 @@ router.get("/agents/analytics", async (req, res): Promise<void> => {
   res.json(result.data);
 });
 
-router.get("/agents/execution-variance", async (req, res): Promise<void> => {
-  const result = await proxyGet("/execution-variance");
+// ── Live positions ────────────────────────────────────────────
+
+router.get("/agents/positions/live", async (req, res): Promise<void> => {
+  const result = await proxyGet("/positions/live");
+  respondGetOrFallback(res, "/positions/live", result);
+});
+
+router.get("/agents/positions/reconcile/status", async (req, res): Promise<void> => {
+  const result = await proxyGet("/positions/reconcile/status");
   if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
+    res.status(503).json({ error: "Reconcile status unavailable" });
     return;
   }
   res.json(result.data);
 });
 
-// ── Live positions ────────────────────────────────────────────
-
-router.get("/agents/positions/live", async (req, res): Promise<void> => {
-  const result = await proxyGet("/positions/live");
+router.post("/agents/positions/reconcile/run", requireAdminSecret, async (req, res): Promise<void> => {
+  const result = await proxyPost("/positions/reconcile/run", {});
   if (!result.ok) {
-    res.status(503).json({ error: "Python agent service unavailable" });
+    res.status(503).json({ error: "Reconcile run failed" });
     return;
   }
   res.json(result.data);
