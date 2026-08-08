@@ -92,9 +92,9 @@ start "" "http://127.0.0.1:8080/"
 
 if defined PUBLICURL (
   echo Public URL: %PUBLICURL%>> "%LOG%"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; $u = Get-Content -LiteralPath (Join-Path $env:TEMP 'matrix-robot-vps-public-url.txt') -Raw; [System.Windows.MessageBox]::Show(('Matrix Robot يعمل على ForexVPS.' + [Environment]::NewLine + [Environment]::NewLine + 'على الـ VPS:' + [Environment]::NewLine + 'http://127.0.0.1:8080' + [Environment]::NewLine + [Environment]::NewLine + 'الهاتف (آسيا سيل / أي شبكة):' + [Environment]::NewLine + $u.Trim() + [Environment]::NewLine + [Environment]::NewLine + 'Safari → مشاركة → إضافة إلى الشاشة الرئيسية.' + [Environment]::NewLine + 'الرابط يتغيّر عند إعادة التشغيل إلا إذا ثبّتّ نفقاً باسم ثابت لاحقاً.'), 'Matrix Robot VPS')"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; $u = Get-Content -LiteralPath (Join-Path $env:TEMP 'matrix-robot-vps-public-url.txt') -Raw; [System.Windows.MessageBox]::Show(('Matrix Robot is running.' + [Environment]::NewLine + [Environment]::NewLine + 'Local:' + [Environment]::NewLine + 'http://127.0.0.1:8080' + [Environment]::NewLine + [Environment]::NewLine + 'Phone URL:' + [Environment]::NewLine + $u.Trim()), 'Matrix Robot VPS')"
 ) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('الخدمات تعمل محلياً على :8080 لكن فشل الرابط العام.' + [Environment]::NewLine + '%LOG%'), 'Matrix Robot VPS')"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Local services are up on :8080 but the public tunnel failed.' + [Environment]::NewLine + 'Open http://127.0.0.1:8080 on this PC.' + [Environment]::NewLine + 'Log: %LOG%'), 'Matrix Robot VPS')"
 )
 
 endlocal

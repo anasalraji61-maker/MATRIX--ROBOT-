@@ -1,5 +1,5 @@
 # Upsert VPS co-located URLs into root .env and sync a copy for the Python brain.
-# Does NOT invent secrets — only forces localhost service URLs for ForexVPS.
+# Does NOT invent secrets - only forces localhost service URLs for ForexVPS.
 
 param(
   [Parameter(Mandatory = $true)]
@@ -11,7 +11,7 @@ $rootEnv = Join-Path $Root ".env"
 $brainEnv = Join-Path $Root "artifacts\python-agents\.env"
 
 if (-not (Test-Path -LiteralPath $rootEnv)) {
-  Write-Error "Missing .env at $rootEnv — copy it from the laptop (LocalSend) first."
+  Write-Error "Missing .env at $rootEnv - copy it from the laptop first."
   exit 1
 }
 
@@ -42,5 +42,5 @@ Copy-Item -LiteralPath $rootEnv -Destination $brainEnv -Force
 Set-EnvKey $brainEnv "MT5_BRIDGE_URL" "http://127.0.0.1:5555"
 Set-EnvKey $brainEnv "PORT" "8000"
 
-Write-Output "VPS env ready: $rootEnv (+ brain copy)"
+Write-Output ('VPS env ready: ' + $rootEnv + ' and brain copy')
 exit 0

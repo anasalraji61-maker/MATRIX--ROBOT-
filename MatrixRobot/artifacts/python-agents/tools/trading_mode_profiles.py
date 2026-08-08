@@ -102,12 +102,14 @@ def _apply_full_power_demo(s) -> None:
     _set(s, "scalping_use_trailing", True)
     _set(s, "scalping_use_breakeven", True)
 
-    _set(s, "council_enabled", True)
-
-    # Demo Full Power — enforce (not shadow) when broker is demo
+    # Demo Full Power — scalping enforce on demo accounts
     if is_demo_account(s):
         _set(s, "scalping_mode", "enforce")
-        _set(s, "council_mode", "enforce")
+
+    # Respect COUNCIL_ENABLED from .env — do not force council back on.
+    if getattr(s, "council_enabled", False) and is_demo_account(s):
+        if not getattr(s, "council_mode", None) or s.council_mode in ("", "shadow"):
+            _set(s, "council_mode", "enforce")
     elif not getattr(s, "council_mode", None) or s.council_mode == "":
         _set(s, "council_mode", "shadow")
 
