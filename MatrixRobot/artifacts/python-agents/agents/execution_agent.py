@@ -235,6 +235,18 @@ async def _run_primary(state: dict, settings, mode: str,
         sym = a.get("symbol")
         act = a.get("signal")
 
+        try:
+            from tools import self_learning
+            blocked, why = self_learning.is_blocked(sym, act)
+            if blocked:
+                executions.append({
+                    "executed": False, "mode": mode, "symbol": sym, "action": act,
+                    "message": f"Self-learning block: {why}",
+                })
+                continue
+        except Exception:
+            pass
+
         news_blocked, news_reason = prop_rules.check_news_blackout(
             state, settings, profile, is_funded,
         )
@@ -434,11 +446,36 @@ async def _run_primary(state: dict, settings, mode: str,
                     corr_report = correlation.build_report(existing)
                 if primary is None:
                     primary = res
+            else:
+                try:
+                    from tools import self_learning
+                    self_learning.record_event(
+                        layer="execution",
+                        kind="execution_fail",
+                        symbol=sym,
+                        side=act,
+                        reason=res.message or "not executed",
+                        severity="high",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             executions.append({
                 "executed": False, "mode": mode, "symbol": a.get("symbol"),
                 "action": a.get("signal"), "message": f"Execution error: {e}",
             })
+            try:
+                from tools import self_learning
+                self_learning.record_event(
+                    layer="execution",
+                    kind="execution_fail",
+                    symbol=a.get("symbol"),
+                    side=a.get("signal"),
+                    reason=str(e),
+                    severity="high",
+                )
+            except Exception:
+                pass
 
     memory.store("open_positions", existing)
 

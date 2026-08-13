@@ -40,9 +40,33 @@ def _require_ml():
         import mlflow  # noqa: F401
     except ImportError as e:
         raise RuntimeError(
-            "PyTorch/MLflow not installed. On VPS run:\n"
-            "  C:\\MatrixVenv\\Scripts\\pip install -r requirements-ml.txt"
+            "PyTorch/MLflow not installed. On the ML Lab laptop run:\n"
+            "  windows\\ml-lab\\SETUP_ML_LAB.bat\n"
+            "or: pip install -r requirements-ml.txt"
         ) from e
+
+
+# Alias used by ml_retrain_scheduler
+_require_ml_deps = _require_ml
+
+
+def pick_device(prefer: str | None = None) -> Any:
+    """prefer: auto | cuda | cpu — uses RTX when available."""
+    import torch
+
+    pref = (prefer or os.environ.get("MATRIX_ML_DEVICE", "auto") or "auto").lower()
+    if pref == "cpu":
+        return torch.device("cpu")
+    if pref == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("MATRIX_ML_DEVICE=cuda but CUDA is not available")
+        return torch.device("cuda")
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0)
+        logger.info("ML trainer using CUDA: %s", name)
+        return torch.device("cuda")
+    logger.info("ML trainer using CPU (no CUDA)")
+    return torch.device("cpu")
 
 
 def _split(X: np.ndarray, y: np.ndarray, val_ratio: float = 0.2, seed: int = 42):
@@ -85,8 +109,9 @@ def train_classifier(
     mlflow_uri: str | None = None,
     experiment: str = "matrix_signal_classifier",
     run_name: str | None = None,
+    device: str | None = None,
 ) -> dict[str, Any]:
-    """Train MLP, log to MLflow, return summary dict."""
+    """Train MLP, log to MLflow, return summary dict. Uses CUDA when available."""
     _require_ml()
     import mlflow
     import torch
@@ -105,9 +130,13 @@ def train_classifier(
     mlflow.set_experiment(experiment)
 
     X_train, y_train, X_val, y_val = _split(dataset.X, dataset.y)
-    device = torch.device("cpu")
+    torch_device = pick_device(device)
 
-    model = build_model(hidden=hidden, dropout=dropout).to(device)
+    eff_batch = batch_size
+    if torch_device.type == "cuda":
+        eff_batch = max(batch_size, 64)
+
+    model = build_model(hidden=hidden, dropout=dropout).to(torch_device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.BCEWithLogitsLoss()
 
@@ -116,8 +145,9 @@ def train_classifier(
             torch.tensor(X_train, dtype=torch.float32),
             torch.tensor(y_train, dtype=torch.float32),
         ),
-        batch_size=min(batch_size, len(y_train)),
+        batch_size=min(eff_batch, len(y_train)),
         shuffle=True,
+        pin_memory=(torch_device.type == "cuda"),
     )
 
     best_val_loss = float("inf")
@@ -133,7 +163,8 @@ def train_classifier(
             "hidden": hidden,
             "dropout": dropout,
             "n_features": len(FEATURE_NAMES),
-            "device": "cpu",
+            "device": str(torch_device),
+            "batch_size": eff_batch,
         })
         mlflow.log_param("dataset", dataset.to_dict())
 
@@ -141,7 +172,8 @@ def train_classifier(
             model.train()
             epoch_loss = 0.0
             for xb, yb in train_loader:
-                xb, yb = xb.to(device), yb.to(device)
+                xb = xb.to(torch_device, non_blocking=True)
+                yb = yb.to(torch_device, non_blocking=True)
                 opt.zero_grad()
                 logits = model(xb)
                 loss = loss_fn(logits, yb)
@@ -153,8 +185,10 @@ def train_classifier(
             model.eval()
             with torch.no_grad():
                 if len(y_val):
-                    val_logits = model(torch.tensor(X_val, dtype=torch.float32).to(device))
-                    val_loss = float(loss_fn(val_logits, torch.tensor(y_val, dtype=torch.float32).to(device)))
+                    val_x = torch.tensor(X_val, dtype=torch.float32).to(torch_device)
+                    val_y = torch.tensor(y_val, dtype=torch.float32).to(torch_device)
+                    val_logits = model(val_x)
+                    val_loss = float(loss_fn(val_logits, val_y))
                     val_prob = torch.sigmoid(val_logits).cpu().numpy()
                     val_m = _metrics(y_val.astype(int), val_prob)
                 else:
@@ -177,7 +211,8 @@ def train_classifier(
 
         model.eval()
         with torch.no_grad():
-            all_logits = model(torch.tensor(dataset.X, dtype=torch.float32).to(device))
+            all_x = torch.tensor(dataset.X, dtype=torch.float32).to(torch_device)
+            all_logits = model(all_x)
             all_prob = torch.sigmoid(all_logits).cpu().numpy()
         train_m = _metrics(dataset.y.astype(int), all_prob)
 
@@ -202,12 +237,15 @@ def train_classifier(
             "feature_names": list(FEATURE_NAMES),
             "metrics": train_m,
             "dataset": dataset.to_dict(),
+            "device_trained": str(torch_device),
         }
-        save_checkpoint(model, ckpt_path, meta=meta)
+        model_cpu = build_model(hidden=hidden, dropout=dropout)
+        model_cpu.load_state_dict({k: v.cpu() for k, v in model.state_dict().items()})
+        save_checkpoint(model_cpu, ckpt_path, meta=meta)
         from ml.inference import export_model_json
 
         json_path = ckpt_path.with_suffix(".json")
-        export_model_json(model, json_path, meta=meta)
+        export_model_json(model_cpu, json_path, meta=meta)
         mlflow.log_artifact(str(json_path))
         mlflow.log_artifact(str(ckpt_path))
         run_id = mlflow.active_run().info.run_id
@@ -221,4 +259,5 @@ def train_classifier(
         "metrics": train_m,
         "dataset": dataset.to_dict(),
         "best_val_loss": round(best_val_loss, 5),
+        "device": str(torch_device),
     }

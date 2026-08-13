@@ -118,8 +118,16 @@ async def lifespan(app: FastAPI):
     from tools import ml_retrain_scheduler
     ml_retrain_scheduler.start_background()
 
+    from tools import evolution_entity
+    evolution_entity.start_background()
+    logger.info(
+        "Evolution Entity: %s | Self-learning + loss investigator run on VPS continuously",
+        "ON" if getattr(settings, "evolution_entity_enabled", True) else "OFF",
+    )
+
     yield
 
+    await evolution_entity.stop_background()
     await ml_retrain_scheduler.stop_background()
     await position_reconciler.stop_background()
     logger.info("Agent service shutting down")

@@ -122,6 +122,20 @@ async def log_position_closed(
         except Exception as e:
             logger.debug("RL outcome record skipped: %s", e)
 
+    # Unified self-learning (trade closes + mistake streaks + prevention blocks)
+    if pnl is not None:
+        try:
+            from tools import self_learning
+            self_learning.on_trade_closed(
+                symbol=symbol,
+                side=side,
+                pnl=float(pnl),
+                reason=reason,
+                trade_id=trade_id,
+            )
+        except Exception as e:
+            logger.warning("Self-learning close hook skipped: %s", e)
+
     if pnl is not None:
         try:
             prop_rules.record_daily_pnl(float(pnl))

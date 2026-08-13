@@ -57,6 +57,53 @@ async def get_adaptive_policy():
     return _ape.get_snapshot()
 
 
+@router.get("/mistake-learner")
+async def get_mistake_learner():
+    """Self-learning from closed-trade mistakes (lightweight, no LLM).
+
+    Auto-applies defensive APE after loss streaks so the system does not
+    wait for the brain to remember adaptive tools.
+    """
+    from tools import mistake_learner
+
+    return mistake_learner.get_snapshot()
+
+
+@router.get("/self-learning")
+async def get_self_learning():
+    """Unified self-learning across all robot layers.
+
+    Records mistakes, creates prevention blocks, and reports prevented repeats.
+    """
+    from tools import self_learning
+
+    return self_learning.get_snapshot()
+
+
+@router.get("/loss-investigations")
+async def get_loss_investigations():
+    """Post-mortems of losing trades: brain errors, thinking changes, code/config advice."""
+    from tools import loss_investigator
+
+    return loss_investigator.get_snapshot()
+
+
+@router.get("/evolution")
+async def get_evolution_entity():
+    """Autonomous Evolution Entity status (runs continuously on VPS cloud Brain)."""
+    from tools import evolution_entity
+
+    return evolution_entity.get_snapshot()
+
+
+@router.post("/evolution/tick")
+async def evolution_tick_now():
+    """Force one evolution tick immediately (debug / after many closes)."""
+    from tools import evolution_entity
+
+    return await evolution_entity.run_tick(force=True)
+
+
 @router.get("/analytics")
 async def get_analytics():
     """Snapshot of the advanced analytics layer for dashboard/debug use.

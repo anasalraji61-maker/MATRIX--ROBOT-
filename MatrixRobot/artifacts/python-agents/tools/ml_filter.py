@@ -21,6 +21,11 @@ def _resolve_json_path(settings) -> Path | None:
     explicit = (settings.ml_model_json_path or "").strip()
     if explicit:
         p = Path(explicit)
+        if not p.is_file():
+            # allow path relative to python-agents cwd
+            p2 = Path.cwd() / p
+            if p2.is_file():
+                p = p2
         if p.is_file():
             return p
     pt = Path(settings.ml_model_path or "")
@@ -28,9 +33,12 @@ def _resolve_json_path(settings) -> Path | None:
         sibling = pt.with_suffix(".json")
         if sibling.is_file():
             return sibling
-    default = Path("ml_models/signal_EURUSD_XAUUSD_2000bars.json")
-    if default.is_file():
-        return default
+    for candidate in (
+        Path("ml_models/signal_deploy.json"),
+        Path("ml_models/signal_EURUSD_XAUUSD_2000bars.json"),
+    ):
+        if candidate.is_file():
+            return candidate
     return None
 
 

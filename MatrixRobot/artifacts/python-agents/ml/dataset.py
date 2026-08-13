@@ -221,3 +221,62 @@ def build_from_postgres(min_completed: int = 20) -> Dataset | None:
             )
         )
     return _samples_to_arrays(samples)
+
+
+def build_from_trade_outcomes(min_completed: int = 8, limit: int = 500) -> Dataset | None:
+    """Train from closed trades in memory/Redis/Postgres via get_recent_outcomes.
+
+    Feature vector is partial (live closes often lack full indicator snapshot),
+    but this is the real mistake loop — wins/losses the robot actually took.
+    """
+    try:
+        from tools import memory
+        rows = memory.get_recent_outcomes(limit=limit)
+    except Exception as e:
+        logger.warning("trade_outcomes dataset skipped: %s", e)
+        return None
+
+    usable = []
+    for row in rows or []:
+        pnl = row.get("pnl")
+        side = str(row.get("side") or row.get("signal") or "").upper()
+        if pnl is None or side not in ("BUY", "SELL"):
+            continue
+        usable.append(row)
+
+    if len(usable) < min_completed:
+        return None
+
+    samples: list[LabeledSample] = []
+    for i, row in enumerate(usable):
+        side = str(row.get("side") or "").upper()
+        pnl = float(row.get("pnl") or 0.0)
+        strength = float(row.get("strength") or row.get("confidence") or 0.55)
+        side_val = 1.0 if side == "BUY" else -1.0
+        label = 1 if pnl > 0 else 0
+        feats = [0.0] * len(FEATURE_NAMES)
+        feats[0] = side_val
+        feats[1] = strength if side_val >= 0 else -strength
+        # Encode rough risk context when present
+        if len(feats) > 2:
+            spread = float(row.get("spread_pips") or row.get("spread_at_entry") or 0.0)
+            feats[2] = min(spread / 10.0, 1.0)
+        if len(feats) > 3:
+            hold = float(row.get("hold_minutes") or 0.0)
+            feats[3] = min(hold / 240.0, 1.0)
+        samples.append(
+            LabeledSample(
+                symbol=str(row.get("symbol") or "").upper(),
+                side=side,
+                features=feats,
+                label=label,
+                pnl_r=pnl,
+                entry_idx=i,
+                meta={
+                    "source": "trade_outcomes",
+                    "close_reason": row.get("close_reason") or row.get("reason"),
+                    "trade_id": row.get("trade_id") or row.get("ticket"),
+                },
+            )
+        )
+    return _samples_to_arrays(samples)

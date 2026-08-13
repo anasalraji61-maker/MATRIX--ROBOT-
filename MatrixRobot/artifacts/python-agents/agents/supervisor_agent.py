@@ -18,7 +18,10 @@ def _finalize_approved(analyses: list[dict], state: dict, settings) -> list[Appr
     approved = build_from_risk_approved(state, settings)
     if not approved:
         return approved
-    from tools import ml_filter, rl_filter
+    from tools import ml_filter, rl_filter, self_learning
+    approved, sl_removed = self_learning.filter_approved_trades(approved, settings)
+    if sl_removed:
+        state["self_learning_supervisor_removed"] = sl_removed
     filtered, ml_scores = ml_filter.filter_trades(approved, state, settings)
     if ml_scores:
         state["ml_scores"] = ml_scores

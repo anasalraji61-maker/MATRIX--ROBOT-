@@ -236,6 +236,28 @@ class Settings(BaseSettings):
     rl_mode: str = "shadow"
     rl_min_q_value: float = -0.15             # block if learned Q below this
     rl_learning_rate: float = 0.12
+
+    # ── Evolution Entity (autonomous continuous self-development on VPS) ──
+    evolution_entity_enabled: bool = True
+    evolution_entity_interval_minutes: int = 15
+    evolution_digest_hours: float = 6.0
+
+    # ── Self-learning immune system (all layers — prevent repeat mistakes) ──
+    self_learning_enabled: bool = True
+    self_learning_repeat_threshold: int = 2   # same fingerprint → block
+    self_learning_block_hours: float = 12.0
+
+    # ── Loss investigator (post-mortem: why brain lost + change thinking + advice) ──
+    loss_investigator_enabled: bool = True
+    loss_investigator_use_llm: bool = True
+
+    # ── Mistake learner (auto defensive APE from closed losses — lightweight) ──
+    # Not full ML training; tracks streaks and applies PAUSE / REDUCE_RISK / etc.
+    mistake_learner_enabled: bool = True
+    mistake_learner_pause_after_symbol_losses: int = 2
+    mistake_learner_reduce_risk_after: int = 3
+    mistake_learner_tighten_after: int = 4
+    mistake_learner_skip_after: int = 5
     ml_min_win_prob: float = 0.38           # veto if model win_prob below this
     ml_model_path: str = "ml_models/signal_EURUSD_XAUUSD_2000bars.pt"
     ml_model_json_path: str = ""            # empty = auto .json next to .pt

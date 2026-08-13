@@ -109,6 +109,15 @@ async def evaluate_candidates(state: dict) -> dict:
         return _reject_state(state, f"APE: session skipped — {skip_reason}", prop_dump, daily_dd, total_dd)
 
     analyses = state.get("analyses", [])
+    sl_removed: list[dict] = []
+    try:
+        from tools import self_learning as _sl
+        analyses, sl_removed = _sl.filter_analyses(analyses, settings)
+        if sl_removed:
+            state = {**state, "analyses": analyses, "self_learning_removed": sl_removed}
+    except Exception:
+        sl_removed = []
+
     candidates = build_approved_trades(analyses, settings)
     if not candidates:
         return _reject_state(state, "No actionable signals — standing aside", prop_dump, daily_dd, total_dd)
@@ -123,6 +132,11 @@ async def evaluate_candidates(state: dict) -> dict:
     rejections: dict[str, list[str]] = {}
     session_blocked: dict[str, list[str]] = {}
     off_session_candidates: list[dict] = []
+    for a in sl_removed:
+        sym = str(a.get("symbol") or "?")
+        rejections.setdefault(sym, []).append(
+            f"Self-learning block: {a.get('self_learning_block') or 'repeat mistake'}"
+        )
     cumulative_open_risk = prop_rules.open_risk_pct(existing, starting)
     profile = getattr(settings, "account_profile", "FN_CHALLENGE")
     is_funded = profile.upper() == "FN_FUNDED"
@@ -138,8 +152,19 @@ async def evaluate_candidates(state: dict) -> dict:
         tier = trade_tiers.classify_trade_tier(strength, settings)
         reject_reason = None
 
+        try:
+            from tools.loss_investigator import strength_penalty
+            pen = strength_penalty(sym, signal)
+            if pen > 0 and strength < (float(getattr(settings, "normal_trade_min_strength", 0.68)) + pen):
+                reject_reason = (
+                    f"Loss-investigator thinking bias: need +{pen:.2f} strength "
+                    f"after prior losses on {sym} {signal} (have {strength:.2f})"
+                )
+        except Exception:
+            pass
+
         dq_reason = symbol_quarantine_reason(sym, state, mode)
-        if dq_reason:
+        if not reject_reason and dq_reason:
             reject_reason = f"Data quarantine: {dq_reason}"
 
         if not reject_reason:

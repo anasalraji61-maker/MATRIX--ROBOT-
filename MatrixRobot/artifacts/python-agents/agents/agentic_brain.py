@@ -63,6 +63,9 @@ STEP 3 — Self-check before deciding:
   • `query_history(symbol)` — your OWN past decisions + trade outcomes on this
     symbol. Strongly recommended before any BUY/SELL to avoid flip-flopping
     and to learn from prior losses.
+  • `get_loss_lessons(symbol)` — post-mortems of past LOSING trades: why your
+    thinking failed and how you must think differently. REQUIRED before
+    re-entering a symbol you previously lost on.
   • `get_prop_status()` — FundedNext compliance snapshot. If can_trade=false,
     EVERY symbol must be HOLD. Always call this before finalizing.
 
@@ -177,6 +180,16 @@ async def run(state: dict) -> dict:
         from tools import llm_circuit
         if llm_circuit.is_credit_or_auth_error(e):
             llm_circuit.trip_openrouter(f"agentic_brain: {e}")
+        try:
+            from tools import self_learning
+            self_learning.record_event(
+                layer="llm",
+                kind="llm_fail",
+                reason=str(e)[:240],
+                severity="high",
+            )
+        except Exception:
+            pass
         logger.exception("Agentic brain failed — falling back to ensemble")
         from agents import analysis_agent
         return await analysis_agent.run(state)
@@ -199,6 +212,14 @@ async def run(state: dict) -> dict:
     for s in symbols:
         if s not in seen:
             analyses.append(_empty_analysis(s, "Brain skipped this symbol").model_dump())
+
+    try:
+        from tools import self_learning
+        analyses, removed = self_learning.filter_analyses(analyses, settings)
+        if removed:
+            state = {**state, "self_learning_analysis_removed": removed}
+    except Exception:
+        pass
 
     best = _pick_best(analyses)
     return {**state, "analyses": analyses, "best_analysis": best}
@@ -270,6 +291,13 @@ async def _agentic_loop(state: dict, settings, symbols: list[str]) -> list[dict]
 
     profile = getattr(settings, "account_profile", "FN_CHALLENGE")
     sys = SYSTEM_PROMPT_TEMPLATE.replace("__PROFILE__", profile)
+    try:
+        from tools import loss_investigator
+        lessons = loss_investigator.brain_context_notes(limit=10)
+        if lessons:
+            sys = sys + "\n\n" + lessons
+    except Exception:
+        pass
     context_block = _build_cycle_context(state)
     user = (
         f"Universe ({len(symbols)} symbols): {', '.join(symbols)}\n"
@@ -278,7 +306,10 @@ async def _agentic_loop(state: dict, settings, symbols: list[str]) -> list[dict]
     )
     if context_block:
         user += f"\n{context_block}\n"
-    user += "Start with universe_snapshot, then drill into the 1-3 most actionable."
+    user += (
+        "Start with universe_snapshot, then drill into the 1-3 most actionable. "
+        "Call get_loss_lessons for any symbol you nearly trade if you lost on it before."
+    )
     messages = [SystemMessage(content=sys), HumanMessage(content=user)]
 
     MAX_ITERS = 12  # snapshot + drill 1-3 symbols × 2-4 tools + history/python + prop_status + final

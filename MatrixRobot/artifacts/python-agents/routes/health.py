@@ -36,6 +36,8 @@ async def health():
             "huggingface": bool(settings.huggingface_api_key),
             "council": getattr(settings, "council_enabled", False),
             "scalping": getattr(settings, "scalping_enabled", False),
+            "evolution_entity": getattr(settings, "evolution_entity_enabled", True),
+            "self_learning": getattr(settings, "self_learning_enabled", True),
         },
         uptime_seconds=round(time.time() - _start_time, 1),
         trading_mode_profile=uni.get("trading_mode_profile", ""),

@@ -180,6 +180,13 @@ async def _execute_full_cycle(cycle_id: str, mode: str, started: datetime, cycle
         brain_active=True,
         cycle_plan={**cycle_plan, "watcher_stats": watcher_stats},
     )
+    try:
+        from tools import self_learning
+        sl_report = self_learning.ingest_cycle(final_state, cycle_id=cycle_id)
+        result["self_learning"] = sl_report
+        final_state = {**final_state, "self_learning": sl_report}
+    except Exception as e:
+        logger.debug("self_learning ingest skipped: %s", e)
     memory.store_cycle_result(result)
     _persist_cycle_state(mode, cycle_id, finished, final_state.get("decision", {}), final_state)
     await _run_scalp_if_enabled(final_state, mode)
