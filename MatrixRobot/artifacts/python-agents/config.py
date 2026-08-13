@@ -1,6 +1,14 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
+# Populate os.environ from .env so modules using os.getenv() (e.g. the MT5
+# bridge secret header) work outside Replit, where secrets are real env vars.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 class Settings(BaseSettings):
     # LLM — Gemini Flash preferred (free 1500/day), OpenRouter, then OpenAI
@@ -11,7 +19,7 @@ class Settings(BaseSettings):
 
     # Models — "gemini-flash-latest" routes to gemini-3.5-flash (free tier: 5 RPM)
     gemini_model: str = "gemini-2.5-flash"
-    primary_model: str = "anthropic/claude-sonnet-4.5"
+    primary_model: str = "openai/gpt-4o-mini"
     fallback_model: str = "openai/gpt-4o-mini"
 
     # Market data
@@ -24,8 +32,21 @@ class Settings(BaseSettings):
     mt5_server: str = ""
     mt5_bridge_url: str = ""  # HTTP bridge URL e.g. http://192.168.1.100:5555
 
-    # Memory
+    # Memory — Supabase/Postgres (set DATABASE_URL in .env)
     redis_url: str = ""
+    database_url: str = ""
+
+    # Telegram alerts (free Bot API)
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+    # Scheduler — default 90 min between trading cycles
+    scheduler_interval_minutes: int = 90
+    auto_start_scheduler: bool = True
+
+    # Embeddings for pgvector (OpenRouter)
+    embedding_model: str = "openai/text-embedding-3-small"
+    embedding_dimensions: int = 1536
 
     # Security — shared secret for write-API authentication (same value as
     # MT5_BRIDGE_SECRET so no new secret is needed on either side).
@@ -56,7 +77,7 @@ class Settings(BaseSettings):
     sizing_safety_buffer_pct: float = 0.3
 
     # FundedNext extra rules (mandatory across PAPER and ACTIVE)
-    max_trades_per_day: int = 20              # hard daily cap (counted at OPEN)
+    max_trades_per_day: int = 30              # hard daily cap (counted at OPEN)
     min_position_hold_seconds: int = 60       # block close < 60s after open
     require_stop_loss: bool = True            # reject any order with sl_pips <= 0
     # FN consistency: a single day's profit cannot exceed N% of starting balance
@@ -64,8 +85,21 @@ class Settings(BaseSettings):
     max_daily_profit_pct: float = 30.0
 
     # Concurrent trade limits
-    max_concurrent_positions: int = 5         # aligned with risk caps
-    min_conviction_threshold: float = 0.60    # min strength to open trade
+    max_concurrent_positions: int = 7         # FN demo primary — aligned with risk caps
+    min_conviction_threshold: float = 0.60    # legacy floor; tiers override when enabled
+
+    # ── Trade sizing tiers (same analysis quality, different risk budget) ──
+    enable_small_trades: bool = True
+    small_trade_min_strength: float = 0.60
+    normal_trade_min_strength: float = 0.68
+    small_trade_max_risk_pct: float = 0.25
+    small_trade_max_per_day: int = 12
+    small_trade_max_open: int = 4
+    small_trade_require_rr_min: float = 1.2
+    normal_trade_require_rr_min: float = 1.5
+
+    # MT5 position reconciler — polls bridge locally (no LLM cost)
+    position_reconcile_interval_seconds: int = 10
 
     # ── FundedNext (or other prop firm) hard rules ────────────────────
     # The bot REFUSES any action that would cross these red lines.
@@ -113,7 +147,14 @@ class Settings(BaseSettings):
     real_max_trades_per_day: int = 200        # vs 20 on FN
     real_max_concurrent_positions: int = 20   # vs 5 on FN
     real_min_position_hold_seconds: int = 0   # scalping allowed
-    real_exec_variance_enabled: bool = False  # disabled by default
+
+    # Micro-account sizing (helps very small REAL accounts not get rejected
+    # solely because broker min-lot risk can't fit the default % budget).
+    # Only affects compute_safe_sizing when account_profile=REAL and live equity
+    # is <= real_micro_equity_threshold.
+    real_micro_equity_threshold: float = 100.0
+    real_micro_max_risk_per_trade_pct: float = 3.5
+    real_micro_strength_floor_for_sizing: float = 0.8
 
     # Trading state: PAPER_MODE | ACTIVE | FROZEN
     trading_state: str = "PAPER_MODE"
@@ -123,19 +164,46 @@ class Settings(BaseSettings):
     # Set ALLOW_LIVE_TRADING=true in Replit Secrets only when ready for real execution.
     allow_live_trading: bool = False
 
-    # Symbols to monitor — Forex + Metals + US Indices
-    symbols: str = (
-        "EURUSD,GBPUSD,USDJPY,USDCHF,AUDUSD,NZDUSD,USDCAD,"
-        "EURGBP,EURJPY,GBPJPY,EURAUD,EURCHF,AUDJPY,CHFJPY,"
-        "CADJPY,NZDJPY,GBPCHF,AUDCAD,AUDNZD,"
-        "XAUUSD,XAGUSD,"
-        "US30,US500,USTEC"
-    )
+    # Trading style: conservative | aggressive | scalp (see tools/trading_profiles.py)
+    trading_profile: str = "conservative"
+    primary_timeframe: str = "H1"   # H1 intraday; M5 when TRADING_PROFILE=scalp
+
+    # ── V11 Full Power Demo profile ───────────────────────────────────
+    trading_mode_profile: str = ""           # FULL_POWER_DEMO
+    symbol_universe_mode: str = ""           # full_55
+    run_24h_full_analysis: bool = False
+    run_24h_all_systems: bool = False
+    allow_24h_scalping: bool = True
+    allow_24h_intraday: bool = True
+    allow_24h_swing: bool = True
+    allow_24h_normal_trades: bool = True
+    allow_24h_small_trades: bool = True
+    off_session_24h_max_open_trades: int = 4
+    off_session_24h_max_trades_per_day: int = 20
+    off_session_24h_risk_multiplier_normal: float = 0.35
+    off_session_24h_risk_multiplier_small: float = 0.20
+    full_analysis_all_symbols: bool = False
+    deep_analysis_top_n: int = 15
+    council_top_n: int = 8
+    council_full_universe_debug: bool = False
+    council_mode: str = "shadow"             # shadow | advisory | enforce
+    i_understand_real_risk: bool = False
+    intraday_max_trades_per_day: int = 10
+    swing_max_trades_per_day: int = 3
+    max_same_currency_exposure: int = 3
+    max_correlated_trades: int = 2
+    full_power_llm_top_n: int = 15
+    scalping_use_trailing: bool = True
+    scalping_use_breakeven: bool = True
+
+    # Symbols — 48 FX + gold/silver + WTI/Brent + Dow/S&P/Nasdaq (see symbol_registry)
+    symbols: str = ""  # default filled from symbol_registry in model_post_init
 
     # ── Advanced Analytics ────────────────────────────────────
     # Multi-timeframe consensus / correlation guard / vol regime / calendar
     multi_timeframe_enabled: bool = True
     mtf_required_alignment: int = 2          # # of TFs that must align for high conviction
+    mtf_max_symbols: int = 12              # MTF deep fetch only for top N symbols per cycle
     correlation_guard_enabled: bool = True
     volatility_regime_enabled: bool = True
     economic_calendar_enabled: bool = True
@@ -152,29 +220,151 @@ class Settings(BaseSettings):
     ict_min_confluence: int = 1             # require at least N ICT confluences for bias
     ict_ensemble_weight: float = 3.5        # weight in ensemble scoring (>= MTF=3.0)
 
-    # ── Execution Variance (DISABLED — prop-firm compliance) ───────────
-    # Execution variance — DISABLED by default. The bot is fully disclosed
-    # as an EA to the prop firm. All lot sizes, SL/TP, and timing come
-    # purely from the risk model. Only enable for personal multi-account
-    # setups where copy-trading false-positives are a concern.
-    # Configure via EXEC_VARIANCE_* environment variables only.
-    exec_variance_enabled: bool = False
-    exec_variance_lot_jitter_pct: float = 0.0
-    exec_variance_pip_jitter: int = 0
-    exec_variance_entry_delay_min_s: int = 0
-    exec_variance_entry_delay_max_s: int = 0
-    exec_variance_skip_signal_pct: float = 0.0
-    exec_variance_schedule_jitter_pct: float = 0.0
-    exec_variance_breaks_enabled: bool = False
-    exec_variance_lunch_start_utc_h: int = 12
-    exec_variance_lunch_end_utc_h: int = 13
-    exec_variance_sleep_start_utc_h: int = 22
-    exec_variance_sleep_end_utc_h: int = 5
-
     # ── Multi-account ─────────────────────────────────────────
     # JSON list of account dicts — see tools/accounts.py for schema.
     # Leave empty to use the legacy single MT5_* primary account.
     accounts_json: str = ""
+
+    # ── ML signal filter (Phase 3D) — NumPy JSON model, no torch in Brain ──
+    ml_filter_enabled: bool = True
+    ml_filter_mode: str = "shadow"          # shadow first 3-7 days, then enforce
+    ml_retrain_enabled: bool = False
+    ml_retrain_interval_hours: int = 168
+    ml_retrain_symbols: str = "EURUSD,XAUUSD,GBPUSD,USDJPY,US500"
+    ml_retrain_bars: int = 3000
+    rl_enabled: bool = True
+    rl_mode: str = "shadow"
+    rl_min_q_value: float = -0.15             # block if learned Q below this
+    rl_learning_rate: float = 0.12
+
+    # ── Evolution Entity (autonomous continuous self-development on VPS) ──
+    evolution_entity_enabled: bool = True
+    evolution_entity_interval_minutes: int = 15
+    evolution_digest_hours: float = 6.0
+
+    # ── Self-learning immune system (all layers — prevent repeat mistakes) ──
+    self_learning_enabled: bool = True
+    self_learning_repeat_threshold: int = 2   # same fingerprint → block
+    self_learning_block_hours: float = 12.0
+
+    # ── Loss investigator (post-mortem: why brain lost + change thinking + advice) ──
+    loss_investigator_enabled: bool = True
+    loss_investigator_use_llm: bool = True
+
+    # ── Mistake learner (auto defensive APE from closed losses — lightweight) ──
+    # Not full ML training; tracks streaks and applies PAUSE / REDUCE_RISK / etc.
+    mistake_learner_enabled: bool = True
+    mistake_learner_pause_after_symbol_losses: int = 2
+    mistake_learner_reduce_risk_after: int = 3
+    mistake_learner_tighten_after: int = 4
+    mistake_learner_skip_after: int = 5
+    ml_min_win_prob: float = 0.38           # veto if model win_prob below this
+    ml_model_path: str = "ml_models/signal_EURUSD_XAUUSD_2000bars.pt"
+    ml_model_json_path: str = ""            # empty = auto .json next to .pt
+
+    # ── Phase 5: Intraday Adaptive (session + position manager) ───────
+    phase5_intraday_enabled: bool = True
+    phase5_session_require_killzone: bool = False  # extended mode trades off-session (SMALL)
+    phase5_block_low_liquidity: bool = False       # extended mode — FX allowed off-session
+    phase5_scheduler_adaptive: bool = True
+    phase5_scheduler_high_liq_minutes: int = 30   # London/NY
+    phase5_scheduler_medium_liq_minutes: int = 45  # Asian
+    phase5_scheduler_low_liq_minutes: int = 30     # off-session (extended 24h)
+    # Session filter: 24h (all systems) | extended | tiered | strict | off
+    session_filter_mode: str = "extended"
+    tiered_block_metals_outside_kz: bool = True
+    tiered_block_oil_outside_kz: bool = True
+    tiered_block_indices_outside_kz: bool = True
+    off_session_min_strength: float = 0.80
+    allow_off_session_small_trades: bool = True
+    off_session_trade_tier: str = "SMALL"
+    off_session_risk_multiplier: float = 0.15
+    off_session_max_open_trades: int = 1
+    off_session_max_trades_per_day: int = 2
+    off_session_require_spread_ok: bool = True
+    off_session_require_no_news: bool = True
+    off_session_require_data_clean: bool = True
+    off_session_min_rr: float = 1.8
+    off_session_allowed_assets: str = "FX_ONLY"
+    # Smart Watcher — scanner outside killzones; escalates strong SMALL to Brain
+    smart_watcher_enabled: bool = True
+    off_session_scanner_minutes: int = 30
+    off_session_maintenance_minutes: int = 15
+    off_session_escalation_min_strength: float = 0.80
+    off_session_max_brain_escalations: int = 3
+    off_session_scan_fx_only: bool = True
+    # Demo only: allow scanner cycle to execute SMALL trades outside killzone
+    smart_watcher_execute_off_session_small: bool = False
+    estimated_full_cycle_cost_usd: float = 0.06
+    estimated_scanner_cycle_cost_usd: float = 0.02
+    estimated_maintenance_cycle_cost_usd: float = 0.005
+    estimated_brain_escalation_cost_usd: float = 0.06
+    phase5_sl_atr_mult_high: float = 1.0
+    phase5_sl_atr_mult_medium: float = 1.25
+    phase5_sl_atr_mult_low: float = 1.5
+    phase5_tp_rr_high: float = 1.5
+    phase5_tp_rr_medium: float = 1.75
+    phase5_tp_rr_low: float = 2.0
+    phase5_position_manager_enabled: bool = True
+    phase5_max_hold_hours: float = 8.0
+    phase5_breakeven_at_r: float = 1.0
+    phase5_trail_start_r: float = 1.5
+    phase5_trail_lock_r: float = 0.5           # lock this many R once trailing starts
+    phase5_session_end_exit: bool = True       # close stale trades entering low-liq window
+    phase5_liquidity_guard_enabled: bool = True
+    phase5_max_spread_pips_fx: float = 3.0
+    phase5_max_spread_pips_xau: float = 50.0
+    phase5_max_spread_pips_index: float = 30.0
+    phase5_max_spread_pips_oil: float = 8.0
+
+    # ── V11: Scalping Engine (separate from V10 intraday/swing — demo-first) ──
+    scalping_enabled: bool = False
+    scalping_demo_only: bool = True
+    scalping_mode: str = "shadow"              # shadow | advisory | enforce
+    scalping_allowed_assets: str = "FX_ONLY"   # FX_ONLY — no metals/indices/oil initially
+    scalping_timeframes: str = "M1,M5,M15"
+    scalping_max_trades_per_day: int = 10
+    scalping_max_open_trades: int = 2
+    scalping_risk_multiplier: float = 0.10
+    scalping_min_strength: float = 0.62
+    scalping_min_rr: float = 1.1
+    scalping_max_hold_minutes: int = 30
+    scalping_sl_pips_min: float = 3.0
+    scalping_sl_pips_max: float = 8.0
+    scalping_tp_pips_min: float = 3.0
+    scalping_tp_pips_max: float = 10.0
+    scalping_max_spread_pips_fx: float = 2.0
+    # 55-symbol funnel — cheap scan always; deep/GPT only for top N
+    scanner_universe_use_full_registry: bool = True
+    cheap_scan_top_deep: int = 10
+    council_top_candidates: int = 5
+    council_gpt_top_n: int = 3
+    council_enabled: bool = True
+
+    # ── Phase 6: Professional hardening (ChatGPT review fixes) ────────
+    prop_server_utc_offset_hours: int = 3       # FundedNext server ~ GMT+2/+3
+    active_fail_closed_data: bool = True        # block ACTIVE on mock quotes/bars/news
+    active_data_per_symbol_quarantine: bool = True  # one bad symbol must not block all
+    active_data_global_block_ratio: float = 0.5   # block cycle if >=50% symbols stale
+    active_disabled_symbols: str = "US30,US500,USTEC"
+    # Surgical hotfix — session quarantine + CHF/time/XAGUSD (ChatGPT review)
+    symbol_quarantine: str = ""
+    chf_pairs_min_strength: float = 0.0
+    chf_pairs_min_rr: float = 0.0
+    time_filter_09_12_min_strength_bonus: float = 0.0
+    time_filter_09_12_min_rr_bonus: float = 0.0
+    xagusd_risk_multiplier: float = 1.0
+    xagusd_require_breakeven: bool = False
+    xagusd_max_single_loss_usd: float = 0.0
+    active_require_live_news: bool = True
+    news_allow_mock: bool = False
+    active_fail_closed_no_account: bool = True  # emergency + risk block if no account
+    active_verify_sltp_after_open: bool = True   # verify SL on bridge; close if missing
+    prop_qualified_trades_required: int = 5      # min closed trades (challenge tracking)
+    prop_news_strict_funded: bool = True         # FN_FUNDED: block entries in news window
+    active_allow_native_mt5: bool = False        # block native MT5 when HTTP bridge is configured
+    active_require_persistent_state: bool = True # ACTIVE needs Postgres or Redis
+    active_secondary_fanout: bool = False        # secondary accounts disabled in ACTIVE until hardened
 
     # API base path (proxy routing)
     base_path: str = "/agents"
@@ -182,6 +372,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def model_post_init(self, __context) -> None:
+        import os
         # Strip whitespace/tabs from all key fields
         object.__setattr__(self, "polygon_api_key", self.polygon_api_key.strip())
         object.__setattr__(self, "twelve_data_api_key", self.twelve_data_api_key.strip())
@@ -189,6 +380,23 @@ class Settings(BaseSettings):
         object.__setattr__(self, "google_api_key", self.google_api_key.strip())
         object.__setattr__(self, "openrouter_api_key", self.openrouter_api_key.strip())
         object.__setattr__(self, "openai_api_key", self.openai_api_key.strip())
+        object.__setattr__(self, "database_url", self.database_url.strip())
+        object.__setattr__(self, "telegram_bot_token", self.telegram_bot_token.strip())
+        object.__setattr__(self, "telegram_chat_id", self.telegram_chat_id.strip())
+        if not (self.symbols or "").strip():
+            from tools.symbol_registry import DEMO_SYMBOLS_CSV
+            object.__setattr__(self, "symbols", DEMO_SYMBOLS_CSV)
+        from tools.trading_profiles import apply_trading_profile
+        from tools.trading_mode_profiles import apply_trading_mode_profile, _env_file_has
+        preserved_full_analysis = self.full_analysis_all_symbols
+        has_full_analysis_env = _env_file_has("FULL_ANALYSIS_ALL_SYMBOLS")
+        apply_trading_profile(self)
+        apply_trading_mode_profile(self)
+        if has_full_analysis_env:
+            object.__setattr__(self, "full_analysis_all_symbols", preserved_full_analysis)
+        # Expose DATABASE_URL for memory.py pool
+        if self.database_url and not os.environ.get("DATABASE_URL"):
+            os.environ["DATABASE_URL"] = self.database_url
 
     @property
     def effective_gemini_key(self) -> str:
@@ -197,7 +405,17 @@ class Settings(BaseSettings):
 
     @property
     def symbol_list(self) -> list[str]:
-        return [s.strip() for s in self.symbols.split(",")]
+        raw = [s.strip().upper() for s in self.symbols.split(",") if s.strip()]
+        disabled = self.active_disabled_symbol_set
+        return [s for s in raw if s not in disabled]
+
+    @property
+    def active_disabled_symbol_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.active_disabled_symbols.split(",") if s.strip()}
+
+    @property
+    def symbol_quarantine_set(self) -> set[str]:
+        return {s.strip().upper() for s in self.symbol_quarantine.split(",") if s.strip()}
 
     @property
     def effective_openrouter_key(self) -> str:
@@ -237,8 +455,17 @@ class Settings(BaseSettings):
         return bool(self.mt5_login and self.mt5_password and self.mt5_server)
 
     @property
+    def has_telegram(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
     def has_redis(self) -> bool:
         return bool(self.redis_url)
+
+    @property
+    def has_database(self) -> bool:
+        import os
+        return bool(self.database_url or os.environ.get("DATABASE_URL"))
 
 
 @lru_cache

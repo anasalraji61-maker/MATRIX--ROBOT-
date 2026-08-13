@@ -27,6 +27,16 @@ from routes.backtest import router as backtest_router
 from routes.usage import router as usage_router
 from routes.strategy import router as strategy_router
 from routes.pnl import router as pnl_router
+from routes.trades import router as trades_router
+from routes.circuit import router as circuit_router
+from routes.reconcile import router as reconcile_router
+from routes.news import router as news_router
+from routes.memory_status import router as memory_router
+from routes.ml_status import router as ml_router
+from routes.scalping import router as scalping_router
+from routes.council import router as council_router
+from routes.universe import router as universe_router
+from routes.strategy_status import router as strategy_status_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +56,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"MT5 Native: {'configured' if settings.has_mt5 else 'not configured'}")
     logger.info(f"Redis: {'connected' if settings.has_redis else 'in-memory fallback'}")
     logger.info(f"Symbols: {', '.join(settings.symbol_list)}")
+    logger.info(
+        f"Session: {settings.session_filter_mode} | "
+        f"SmartWatcher: {settings.smart_watcher_enabled} | "
+        f"ML: {settings.ml_filter_mode} | RL: {getattr(settings, 'rl_mode', 'off')}"
+    )
 
     # Pre-compile the LangGraph at startup to avoid cold-start on first request
     get_graph()
@@ -62,6 +77,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"Restored trading mode from persistent state: {saved_mode}")
 
     sched = runtime_state.get_scheduler()
+    interval_default = settings.scheduler_interval_minutes
     if settings.disable_scheduler:
         logger.info("Scheduler disabled (DISABLE_SCHEDULER=true) — proxy-only mode, VPS brain runs cycles")
     elif sched.get("running") and sched.get("interval_minutes"):
@@ -70,9 +86,50 @@ async def lifespan(app: FastAPI):
         trading_module._scheduler_running = True
         trading_module._scheduler_task = asyncio.create_task(_scheduler_loop(interval))
         logger.info(f"Auto-restored scheduler — every {interval} min (effective mode: {get_effective_mode()})")
+    elif settings.auto_start_scheduler:
+        interval = int(interval_default)
+        trading_module._scheduler_interval_minutes = interval
+        trading_module._scheduler_running = True
+        trading_module._scheduler_task = asyncio.create_task(_scheduler_loop(interval))
+        runtime_state.set_scheduler(True, interval)
+        logger.info(f"Auto-started scheduler — every {interval} min (default)")
+
+    from tools.db_bootstrap import ensure_schema
+    pg_ok = ensure_schema()
+
+    from tools import telegram_alerts
+    if settings.has_telegram:
+        sched_interval = (
+            trading_module._scheduler_interval_minutes
+            if trading_module._scheduler_running
+            else None
+        )
+        asyncio.create_task(telegram_alerts.alert_startup(
+            get_effective_mode(), pg_ok, sched_interval,
+        ))
+
+    from tools import position_reconciler
+    position_reconciler.start_background()
+    logger.info(
+        f"Position reconciler started — every "
+        f"{settings.position_reconcile_interval_seconds}s (no LLM cost)"
+    )
+
+    from tools import ml_retrain_scheduler
+    ml_retrain_scheduler.start_background()
+
+    from tools import evolution_entity
+    evolution_entity.start_background()
+    logger.info(
+        "Evolution Entity: %s | Self-learning + loss investigator run on VPS continuously",
+        "ON" if getattr(settings, "evolution_entity_enabled", True) else "OFF",
+    )
 
     yield
 
+    await evolution_entity.stop_background()
+    await ml_retrain_scheduler.stop_background()
+    await position_reconciler.stop_background()
     logger.info("Agent service shutting down")
 
 
@@ -194,6 +251,16 @@ app.include_router(backtest_router, prefix=PREFIX, tags=["Backtest"])
 app.include_router(usage_router, prefix=PREFIX, tags=["Usage"])
 app.include_router(strategy_router, prefix=PREFIX, tags=["Strategy"])
 app.include_router(pnl_router, prefix=PREFIX, tags=["PnL"])
+app.include_router(trades_router, prefix=PREFIX, tags=["Trades"])
+app.include_router(circuit_router, prefix=PREFIX, tags=["Circuit"])
+app.include_router(reconcile_router, prefix=PREFIX, tags=["Reconcile"])
+app.include_router(news_router, prefix=PREFIX, tags=["News"])
+app.include_router(memory_router, prefix=PREFIX, tags=["Memory"])
+app.include_router(ml_router, prefix=PREFIX, tags=["ML"])
+app.include_router(scalping_router, prefix=PREFIX, tags=["Scalping"])
+app.include_router(council_router, prefix=PREFIX, tags=["Council"])
+app.include_router(universe_router, prefix=PREFIX, tags=["Universe"])
+app.include_router(strategy_status_router, prefix=PREFIX, tags=["Strategy"])
 
 
 @app.get(PREFIX + "/info")

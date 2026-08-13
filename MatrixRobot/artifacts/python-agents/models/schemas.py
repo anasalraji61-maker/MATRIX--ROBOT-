@@ -145,12 +145,19 @@ class RiskAssessment(BaseModel):
     current_total_drawdown_pct: float
 
 
+class ApprovedTrade(BaseModel):
+    symbol: str
+    signal: str         # BUY | SELL
+    strength: float
+
+
 class SupervisorDecision(BaseModel):
     action: str         # BUY | SELL | HOLD | FREEZE
     symbol: str
     confidence: float
     reasoning: str
     risk_note: str
+    approved_trades: list[ApprovedTrade] = Field(default_factory=list)
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
@@ -165,6 +172,7 @@ class ExecutionResult(BaseModel):
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
     message: str = ""
+    manual_check_required: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
@@ -202,8 +210,13 @@ class AgentState(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    version: str = "1.0.0"
+    version: str = "11.0.0"
     mode: str
     llm_provider: str
     services: dict[str, bool]
     uptime_seconds: float
+    trading_mode_profile: str = ""
+    configured_symbols_count: int = 0
+    active_symbols_count: int = 0
+    disabled_symbols: list[str] = Field(default_factory=list)
+    asset_class_counts: dict[str, int] = Field(default_factory=dict)

@@ -47,3 +47,20 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Secrets — never commit real env files (keep .env.example only)
+.env
+.env.*
+!.env.example
+.replit
+**/env_template.txt
+artifacts/python-agents/.env
+artifacts/python-agents/.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+artifacts/python-agents/.state/

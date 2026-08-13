@@ -1,3 +1,35 @@
-MT5_LOGIN=5050676790
-MT5_PASSWORD=@qZiJdH6
-MT5_SERVER=اكتب_اسم_السيرفر_هنا
+# Matrix Robot — copy to .env on VPS (never commit .env)
+
+# ── MT5 Bridge ──
+MT5_LOGIN=YOUR_MT5_LOGIN
+MT5_PASSWORD=YOUR_MT5_PASSWORD_HERE
+MT5_SERVER=YOUR_BROKER_SERVER_NAME
+MT5_BRIDGE_URL=http://YOUR_VPS_IP:5555
+MT5_BRIDGE_SECRET=YOUR_BRIDGE_SECRET_HERE
+
+# ── Market data ──
+TWELVE_DATA_API_KEY=YOUR_TWELVE_DATA_API_KEY_HERE
+POLYGON_API_KEY=YOUR_POLYGON_API_KEY_HERE
+
+# ── Persistent state (required for ACTIVE) ──
+DATABASE_URL=postgresql://user:pass@host:5432/dbname
+# REDIS_URL=redis://localhost:6379
+
+# ── Trading mode ──
+TRADING_STATE=PAPER_MODE
+ALLOW_LIVE_TRADING=false
+
+# ── ACTIVE safety (Phase 6+) ──
+active_allow_native_mt5=false
+active_require_persistent_state=true
+active_secondary_fanout=false
+# Set false if Polygon news is not configured (uses economic calendar instead):
+active_require_live_news=true
+
+# ── ML signal filter ──
+ML_FILTER_ENABLED=false
+ML_FILTER_MODE=shadow
+
+# ── Telegram (optional) ──
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=

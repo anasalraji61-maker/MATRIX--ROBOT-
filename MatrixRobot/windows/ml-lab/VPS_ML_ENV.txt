@@ -1,0 +1,28 @@
+# =============================================================================
+# Append these lines to the VPS .env — Evolution Entity runs ON THE CLOUD 24/7
+# =============================================================================
+
+# Autonomous Evolution Entity (continuous self-development on VPS Brain)
+EVOLUTION_ENTITY_ENABLED=true
+EVOLUTION_ENTITY_INTERVAL_MINUTES=15
+EVOLUTION_DIGEST_HOURS=6
+
+# Unified self-learning + loss investigator (cloud)
+SELF_LEARNING_ENABLED=true
+SELF_LEARNING_REPEAT_THRESHOLD=2
+SELF_LEARNING_BLOCK_HOURS=12
+LOSS_INVESTIGATOR_ENABLED=true
+LOSS_INVESTIGATOR_USE_LLM=true
+MISTAKE_LEARNER_ENABLED=true
+
+# Use JSON model from laptop training (optional — NumPy on VPS)
+ML_FILTER_ENABLED=true
+ML_FILTER_MODE=advisory
+ML_MIN_WIN_PROB=0.38
+ML_MODEL_JSON_PATH=ml_models/signal_deploy.json
+ML_RETRAIN_ENABLED=false
+
+RL_ENABLED=true
+RL_MODE=shadow
+RL_MIN_Q_VALUE=-0.15
+RL_LEARNING_RATE=0.12

@@ -8,6 +8,41 @@ from tools import adaptive_policy as _ape
 router = APIRouter()
 
 
+@router.get("/session/status")
+async def get_session_status():
+    """Phase 5 + Smart Watcher — session profile and cycle planning."""
+    from tools.session_engine import get_profile
+    from tools.cycle_planner import plan_cycle
+    from routes.trading import get_effective_mode
+
+    settings = get_settings()
+    mode = get_effective_mode()
+    profile = get_profile(settings)
+    plan = plan_cycle(mode, settings)
+    return {
+        "phase5_intraday_enabled": settings.phase5_intraday_enabled,
+        "session_filter_mode": settings.session_filter_mode,
+        "smart_watcher_enabled": settings.smart_watcher_enabled,
+        "smart_watcher_execute_off_session_small": settings.smart_watcher_execute_off_session_small,
+        "trading_profile": getattr(settings, "trading_profile", "conservative"),
+        "primary_timeframe": getattr(settings, "primary_timeframe", "H1"),
+        "symbol_count": len(settings.symbol_list),
+        "active_disabled_symbols": sorted(settings.active_disabled_symbol_set),
+        "position_manager_enabled": settings.phase5_position_manager_enabled,
+        "scheduler_adaptive": settings.phase5_scheduler_adaptive,
+        "brain_active": plan.get("brain_active"),
+        "cycle_type": plan.get("cycle_type"),
+        "next_full_cycle_at": plan.get("next_full_cycle_at"),
+        "next_killzone": plan.get("next_killzone"),
+        "scheduler_interval_minutes": plan.get("scheduler_interval_minutes"),
+        "estimated_cost_saved_today": (plan.get("watcher_stats") or {}).get(
+            "estimated_cost_saved_usd", 0.0,
+        ),
+        "watcher_stats": plan.get("watcher_stats"),
+        "profile": profile,
+    }
+
+
 @router.get("/adaptive-policy")
 async def get_adaptive_policy():
     """Adaptive Policy Envelope (APE) snapshot.
@@ -20,6 +55,53 @@ async def get_adaptive_policy():
       - allowed / forbidden: what the brain can/cannot change on its own
     """
     return _ape.get_snapshot()
+
+
+@router.get("/mistake-learner")
+async def get_mistake_learner():
+    """Self-learning from closed-trade mistakes (lightweight, no LLM).
+
+    Auto-applies defensive APE after loss streaks so the system does not
+    wait for the brain to remember adaptive tools.
+    """
+    from tools import mistake_learner
+
+    return mistake_learner.get_snapshot()
+
+
+@router.get("/self-learning")
+async def get_self_learning():
+    """Unified self-learning across all robot layers.
+
+    Records mistakes, creates prevention blocks, and reports prevented repeats.
+    """
+    from tools import self_learning
+
+    return self_learning.get_snapshot()
+
+
+@router.get("/loss-investigations")
+async def get_loss_investigations():
+    """Post-mortems of losing trades: brain errors, thinking changes, code/config advice."""
+    from tools import loss_investigator
+
+    return loss_investigator.get_snapshot()
+
+
+@router.get("/evolution")
+async def get_evolution_entity():
+    """Autonomous Evolution Entity status (runs continuously on VPS cloud Brain)."""
+    from tools import evolution_entity
+
+    return evolution_entity.get_snapshot()
+
+
+@router.post("/evolution/tick")
+async def evolution_tick_now():
+    """Force one evolution tick immediately (debug / after many closes)."""
+    from tools import evolution_entity
+
+    return await evolution_entity.run_tick(force=True)
 
 
 @router.get("/analytics")

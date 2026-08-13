@@ -2,7 +2,8 @@
 LangGraph state machine — the orchestration backbone of Matrix Robot.
 
 Pipeline (sequential, each node adds to state):
-  data_fetch → sentiment → analysis → risk → supervisor → execution (conditional)
+  emergency → position_manager → data_fetch → sentiment → analysis →
+  council → risk → supervisor → execution (conditional)
 
 The graph compiles once at startup and is reused for every trading cycle.
 """
@@ -16,6 +17,8 @@ from agents import (
     risk_agent,
     supervisor_agent,
     execution_agent,
+    position_manager_agent,
+    council_agent,
 )
 from tools import emergency_guard
 
@@ -47,9 +50,19 @@ class TradingState(TypedDict, total=False):
     # FundedNext / prop-firm compliance layer
     account: dict
     prop_status: dict
+    session_profile: dict
+    position_management: dict
+    council_report: dict
+    preliminary_ranked: list
+    approved_risk_trades: list
 
 
-# LangGraph requires async node functions defined at module level
+async def _node_position_manager(state: TradingState) -> TradingState:
+    try:
+        return await position_manager_agent.run(dict(state))
+    except Exception as e:
+        return {**dict(state), "errors": list(state.get("errors", [])) + [f"position_manager: {e}"]}
+
 
 async def _node_emergency(state: TradingState) -> TradingState:
     """FIRST node every cycle. Checks daily-DD lockout + emergency liquidation
@@ -65,7 +78,24 @@ async def _node_emergency(state: TradingState) -> TradingState:
             }
         return new_state
     except Exception as e:
-        return {**dict(state), "errors": list(state.get("errors", [])) + [f"emergency_guard: {e}"]}
+        st = dict(state)
+        if st.get("mode") == "ACTIVE":
+            return {
+                **st,
+                "emergency": {
+                    "locked": True,
+                    "tripped_now": False,
+                    "lockout": {"reason": f"Emergency guard failed: {e}"},
+                    "fail_closed": True,
+                },
+                "execution": {
+                    "executed": False,
+                    "mode": "ACTIVE",
+                    "message": "Emergency guard failed — ACTIVE cycle blocked fail-closed",
+                },
+                "errors": list(st.get("errors", [])) + [f"emergency_guard: {e}"],
+            }
+        return {**st, "errors": list(st.get("errors", [])) + [f"emergency_guard: {e}"]}
 
 
 async def _node_data(state: TradingState) -> TradingState:
@@ -89,6 +119,13 @@ async def _node_analysis(state: TradingState) -> TradingState:
         return await agentic_brain.run(dict(state))
     except Exception as e:
         return {**dict(state), "errors": list(state.get("errors", [])) + [f"agentic_brain: {e}"]}
+
+
+async def _node_council(state: TradingState) -> TradingState:
+    try:
+        return await council_agent.run(dict(state))
+    except Exception as e:
+        return {**dict(state), "errors": list(state.get("errors", [])) + [f"council_agent: {e}"]}
 
 
 async def _node_risk(state: TradingState) -> TradingState:
@@ -119,8 +156,12 @@ async def _node_skip(state: TradingState) -> TradingState:
     if emergency.get("locked"):
         lock = emergency.get("lockout", {}) or {}
         reason = lock.get("reason", "Daily DD lockout")
-        message = f"DAILY LOCKOUT — {reason}. Resumes at UTC midnight."
-        risk_note = f"Auto-liquidated; trading halted until UTC midnight ({reason})"
+        if emergency.get("fail_closed"):
+            message = f"Emergency guard failed — ACTIVE blocked fail-closed ({reason})"
+            risk_note = message
+        else:
+            message = f"DAILY LOCKOUT — {reason}. Resumes at broker/FundedNext server midnight."
+            risk_note = f"Auto-liquidated; trading halted until broker server midnight ({reason})"
     else:
         message = "Supervisor decided to hold — no execution"
         risk_note = existing.get("risk_note") or "no execution"
@@ -145,11 +186,11 @@ async def _node_skip(state: TradingState) -> TradingState:
 
 def _should_execute(state: TradingState) -> str:
     decision = state.get("decision", {})
-    action = decision.get("action", "HOLD")
+    approved = decision.get("approved_trades") or []
     risk_approved = state.get("risk", {}).get("approved", False)
     mode = state.get("mode", "PAPER_MODE")
 
-    if action in ("BUY", "SELL") and risk_approved and mode != "FROZEN":
+    if approved and risk_approved and mode != "FROZEN":
         return "execute"
     return "skip"
 
@@ -158,9 +199,11 @@ def build_graph():
     workflow = StateGraph(TradingState)
 
     workflow.add_node("emergency",  _node_emergency)
+    workflow.add_node("position_manager", _node_position_manager)
     workflow.add_node("data_fetch", _node_data)
     workflow.add_node("sentiment",  _node_sentiment)
     workflow.add_node("analysis",   _node_analysis)
+    workflow.add_node("council",    _node_council)
     workflow.add_node("risk",       _node_risk)
     workflow.add_node("supervisor", _node_supervisor)
     workflow.add_node("execution",  _node_execution)
@@ -170,11 +213,13 @@ def build_graph():
     workflow.add_conditional_edges(
         "emergency",
         lambda s: "locked" if (s.get("emergency") or {}).get("locked") else "continue",
-        {"locked": "skip", "continue": "data_fetch"},
+        {"locked": "skip", "continue": "position_manager"},
     )
+    workflow.add_edge("position_manager", "data_fetch")
     workflow.add_edge("data_fetch", "sentiment")
     workflow.add_edge("sentiment", "analysis")
-    workflow.add_edge("analysis", "risk")
+    workflow.add_edge("analysis", "council")
+    workflow.add_edge("council", "risk")
     workflow.add_edge("risk", "supervisor")
     workflow.add_conditional_edges(
         "supervisor",

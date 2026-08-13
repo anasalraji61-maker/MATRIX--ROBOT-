@@ -74,8 +74,8 @@ Mobile-first PWA dashboard for monitoring an autonomous LangGraph trading system
 | `OPENAI_API_KEY` | ✓ active (fallback) |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | available |
 | `SESSION_SECRET` | ✓ |
-| `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` | ✓ (MetaQuotes-Demo `107560748` Hedge, EUR 10K) — credentials in `.env` on VPS only; bridge attaches to running terminal so login args are fallback only |
-| `MT5_BRIDGE_URL` | ✓ active — `http://185.211.5.217:5555` (Contabo VPS Windows Server 2025, direct, no tunnel) |
+| `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` | ✓ — credentials in `.env` on VPS only; bridge attaches to running terminal so login args are fallback only |
+| `MT5_BRIDGE_URL` | ✓ active — `http://YOUR_VPS_IP:5555` (Windows Server bridge, direct) |
 | `MT5_BRIDGE_SECRET` | ✓ set on both Replit + VPS `.env` |
 
 ## MT5 setup (user-side, pending)
@@ -89,7 +89,7 @@ Steps for user's Windows laptop: download both files → put in `Desktop\MatrixR
 
 ## Python agent routes (`/agents/*`)
 
-`health`, `info`, `cycle/run`, `cycle/status`, `signals`, `state`, `positions`, `mode` (GET/POST), `scheduler/{status,start,stop}`, `positions/live`, `analytics`, `prop-status`, `anti-detection`, `backtest/run`, `backtest/portfolio`.
+`health`, `info`, `cycle/run`, `cycle/status`, `signals`, `state`, `positions`, `mode` (GET/POST), `scheduler/{status,start,stop}`, `positions/live`, `analytics`, `prop-status`, `backtest/run`, `backtest/portfolio`.
 
 Node bridge `artifacts/api-server/src/routes/agents.ts` proxies `/api/agents/*` to Python.
 
@@ -103,21 +103,12 @@ Internal stricter caps (bot self-halts BEFORE FN hard caps):
 
 **Mandatory safety (paper + live):**
 - `require_stop_loss=True` — every order has SL (≥15 pips). Execution agent rejects naked orders.
-- `max_trades_per_day=20` — hard cap counted at OPEN, resets UTC midnight
+- `max_trades_per_day=20` — hard cap counted at OPEN, resets at broker/FundedNext server midnight
 - `min_position_hold_seconds=60` — both close routes reject closes if age <60s (anti-scalping)
 
 **`compute_safe_sizing()`** (shared by risk + execution agents): SL = 1.5×ATR (min 15 pips), TP = 2×SL. Lots derived so max loss respects all 4 caps simultaneously (per-trade, daily DD room, total DD room, portfolio room), with `sizing_safety_buffer_pct=0.3`. Strict budget contract — rejects when no room.
 
 `GET /agents/prop-status` exposes live compliance snapshot. `account_state.reset_for_new_challenge()` wipes for Phase 2 / fresh eval.
-
-## Anti-detection (`tools/anti_detection.py`)
-
-- Lot jitter ±15%, pip jitter ±7 pips on SL/TP
-- Entry delay 30-180s (ACTIVE only), 7% signal skip, scheduler jitter ±20%
-- Break windows: lunch 12-13 UTC, sleep 22-05 UTC (ACTIVE only)
-- Weekly strategy rotation: TREND / MEAN_REVERSION / BREAKOUT / SENTIMENT
-
-Master switch: `ANTI_DETECT_ENABLED=false`. Snapshot: `GET /agents/anti-detection`.
 
 ## Analytics layer (advanced)
 

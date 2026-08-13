@@ -81,15 +81,25 @@ def _tf_trend(bars: list[dict]) -> TimeframeTrend:
     )
 
 
-async def compute_mtf(symbol: str) -> MultiTimeframeView:
-    """Fetch all timeframes in parallel and return consensus view."""
-    results = await asyncio.gather(
-        *[fetch_historical(symbol, limit=lim, timeframe=tf) for tf, lim in TIMEFRAMES]
-    )
+async def compute_mtf(symbol: str, h1_bars: list[dict] | None = None) -> MultiTimeframeView:
+    """Fetch timeframes and return consensus view. Reuse h1_bars when provided."""
+    fetch_plan = [(tf, lim) for tf, lim in TIMEFRAMES if not (tf == "H1" and h1_bars)]
+    results = []
+    if fetch_plan:
+        fetched = await asyncio.gather(
+            *[fetch_historical(symbol, limit=lim, timeframe=tf) for tf, lim in fetch_plan]
+        )
+        results = list(fetched)
+
     tf_trends: list[TimeframeTrend] = []
     bull_n = 0
     bear_n = 0
-    for (tf, _), bars in zip(TIMEFRAMES, results):
+    for tf, lim in TIMEFRAMES:
+        if tf == "H1" and h1_bars is not None:
+            bars = h1_bars
+        else:
+            idx = next(i for i, (t, _) in enumerate(fetch_plan) if t == tf)
+            bars = results[idx]
         t = _tf_trend(bars)
         t.timeframe = tf
         tf_trends.append(t)

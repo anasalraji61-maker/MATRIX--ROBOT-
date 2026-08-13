@@ -99,13 +99,13 @@ const SECTIONS: Section[] = [
     ],
   },
   {
-    title: "Safety Layers (×7)",
-    subtitle: "طبقات الحماية السبع",
+    title: "Safety Layers (×6)",
+    subtitle: "طبقات الحماية الست",
     icon: Shield,
     accent: "text-emerald-400 border-emerald-500/30 bg-emerald-500/10",
     rows: [
       { name: "Prop Rules Layer", role: "تجاوز حدود FundedNext (4% / 9%)" },
-      { name: "Execution Variance Layer", role: "تقليل تشابه التنفيذ بين حسابات المالك بناءً على إدارة المخاطر" },
+      { name: "Emergency Guard", role: "إغلاق تلقائي عند تجاوز السحب اليومي" },
       { name: "Correlation Guard", role: "صفقات مرتبطة بنفس الاتجاه" },
       { name: "Economic Calendar", role: "التداول وقت الأخبار الكبرى" },
       { name: "Volatility Regime", role: "تقليل الحجم وقت التذبذب العالي" },

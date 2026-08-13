@@ -10,7 +10,7 @@ Two protections the gatekeeper-style risk_agent doesn't provide:
 
   2) **Daily lockout** — once the hard internal cap (default 4%) is hit, mark
      today as LOCKED. No analysis, no risk, no execution runs for the rest of
-     the UTC day. Auto-resets at 00:00 UTC the next day.
+     the UTC day. Auto-resets at broker/FundedNext server midnight.
 
 This module is intentionally side-effect light: the only mutation it performs
 is calling the MT5 bridge `/trade/close` endpoint and writing a single flag
@@ -26,22 +26,19 @@ import httpx
 
 from config import get_settings
 from tools import memory, account_state, market_hours
+from tools.prop_time import today_key, seconds_until_prop_server_midnight
 
 logger = logging.getLogger("matrix.emergency_guard")
 
 _LOCKOUT_KEY = "prop_daily_lockout"
 
 
-# ---------- lockout state ----------------------------------------------------
-
 def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return today_key()
 
 
 def _seconds_until_utc_midnight() -> int:
-    now = datetime.now(timezone.utc)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return max(60, int((tomorrow - now).total_seconds()))
+    return seconds_until_prop_server_midnight()
 
 
 def get_lockout() -> dict:
@@ -69,7 +66,7 @@ def set_daily_lockout(reason: str, daily_dd_pct: float, floating_pnl: float) -> 
     }
     memory.store(_LOCKOUT_KEY, rec, ttl_seconds=_seconds_until_utc_midnight() + 120)
     logger.error(
-        "DAILY LOCKOUT TRIPPED: %s | dd=%.2f%% | floating=%.2f EUR | unlocks at UTC midnight",
+        "DAILY LOCKOUT TRIPPED: %s | dd=%.2f%% | floating=%.2f EUR | unlocks at broker server midnight",
         reason, daily_dd_pct, floating_pnl,
     )
     return rec
@@ -110,7 +107,7 @@ async def _close_position_via_bridge(settings, trade_id: str | int) -> dict:
             r = await client.post(
                 f"{settings.mt5_bridge_url}/trade/close",
                 headers=headers,
-                json={"trade_id": int(trade_id), "comment": "matrix-emergency-liquidation"},
+                json={"ticket": int(trade_id), "comment": "matrix-emergency-liquidation"},
             )
             r.raise_for_status()
             return {"success": True, "trade_id": trade_id, "result": r.json()}
@@ -124,15 +121,28 @@ async def liquidate_all_positions(settings) -> dict:
     if not positions:
         return {"closed": 0, "results": [], "reason": "no_open_positions"}
     results = []
+    failed = 0
     for p in positions:
         tid = p.get("trade_id") or p.get("ticket")
         if tid is None:
             continue
         res = await _close_position_via_bridge(settings, tid)
         results.append({**res, "symbol": p.get("symbol"), "profit": p.get("profit")})
+        if not res.get("success"):
+            failed += 1
     closed = sum(1 for r in results if r.get("success"))
+    if failed:
+        logger.error("emergency_liquidation: %d/%d close attempts failed", failed, len(results))
+        try:
+            from tools import telegram_alerts
+            if settings.has_telegram:
+                await telegram_alerts.send_message(
+                    f"EMERGENCY: failed to close {failed}/{len(results)} positions — check MT5 manually"
+                )
+        except Exception:
+            pass
     logger.warning("emergency_liquidation: closed %d/%d positions", closed, len(results))
-    return {"closed": closed, "attempted": len(results), "results": results}
+    return {"closed": closed, "attempted": len(results), "failed": failed, "results": results}
 
 
 # ---------- main entry -------------------------------------------------------
@@ -154,6 +164,7 @@ async def evaluate(state: dict | None = None) -> dict:
     Side effects: may CLOSE all positions and SET the daily lockout flag.
     """
     settings = get_settings()
+    mode = (state or {}).get("mode") if state else settings.trading_state
     soft_cap = float(getattr(settings, "emergency_soft_cap_pct", 3.5))
     hard_cap = float(getattr(settings, "max_daily_drawdown_pct", 4.0))
     fn_cap   = float(getattr(settings, "fn_max_daily_loss_pct", 5.0))
@@ -189,13 +200,24 @@ async def evaluate(state: dict | None = None) -> dict:
     # Compute current floating-equity daily DD
     snap = await account_state.refresh_account()
     if not snap or not snap.get("available"):
-        # Can't read account — fail open (don't block) but log
-        logger.warning("emergency_guard: account snapshot unavailable, skipping check")
+        fail_closed = (
+            mode == "ACTIVE"
+            and getattr(settings, "active_fail_closed_no_account", True)
+        )
+        logger.warning(
+            "emergency_guard: account snapshot unavailable (%s)",
+            "blocking cycle" if fail_closed else "skipping check",
+        )
         return {
-            "locked": False, "tripped_now": False, "liquidated": None,
-            "lockout": {}, "soft_breach": False,
-            "daily_dd_pct": 0.0, "floating_pnl": 0.0,
+            "locked": fail_closed,
+            "tripped_now": False,
+            "liquidated": None,
+            "lockout": {},
+            "soft_breach": False,
+            "daily_dd_pct": 0.0,
+            "floating_pnl": 0.0,
             "thresholds": {"soft": soft_cap, "hard": hard_cap, "fn_cap": fn_cap},
+            "account_unavailable": True,
         }
 
     daily_dd = float(snap.get("daily_drawdown_pct", 0.0))
@@ -215,29 +237,31 @@ async def evaluate(state: dict | None = None) -> dict:
         }
 
     # SOFT BREACH: liquidate all positions now to stop the bleeding.
-    # HARD BREACH: also lock the day so no further trading happens until UTC midnight.
+    # HARD BREACH: also lock the day so no further trading happens until broker server midnight.
     logger.warning(
         "EMERGENCY GUARD breach: daily_dd=%.2f%% (soft=%.1f, hard=%.1f, fn_cap=%.1f) floating=%.2f",
         daily_dd, soft_cap, hard_cap, fn_cap, floating,
     )
     liquidation = await liquidate_all_positions(settings)
 
-    lockout_rec = {}
-    tripped_now = False
-    if hard_breach:
-        lockout_rec = set_daily_lockout(
-            reason=f"Daily DD {daily_dd:.2f}% >= hard cap {hard_cap:.1f}% — auto liquidated",
-            daily_dd_pct=daily_dd,
-            floating_pnl=floating,
-        )
-        tripped_now = True
+    lockout_rec = set_daily_lockout(
+        reason=(
+            f"Daily DD {daily_dd:.2f}% >= hard cap {hard_cap:.1f}% — auto liquidated"
+            if hard_breach
+            else f"Emergency soft cap reached: {daily_dd:.2f}% >= {soft_cap:.1f}% — auto liquidated"
+        ),
+        daily_dd_pct=daily_dd,
+        floating_pnl=floating,
+    )
+    tripped_now = True
 
     return {
-        "locked": bool(lockout_rec),
+        "locked": True,
         "tripped_now": tripped_now,
         "liquidated": liquidation,
         "lockout": lockout_rec,
         "soft_breach": True,
+        "hard_breach": hard_breach,
         "daily_dd_pct": daily_dd,
         "floating_pnl": floating,
         "thresholds": {"soft": soft_cap, "hard": hard_cap, "fn_cap": fn_cap},

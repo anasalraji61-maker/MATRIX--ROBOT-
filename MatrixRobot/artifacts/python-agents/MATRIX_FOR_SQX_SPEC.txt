@@ -1,0 +1,338 @@
+================================================================================
+  MATRIX ROBOT V11 — مواصفات لـ StrategyQuant X
+  MATRIX_FOR_SQX_SPEC.txt
+  تاريخ الإعداد: 2026-06-10
+================================================================================
+
+■ الفكرة الأساسية (اقرأ هذا أولاً)
+────────────────────────────────────────────────────────────────────────────
+أنت محق: آلاف الاستراتيجيات من SQX = سيارات رولز رويس، لكن Matrix ليس «محرك
+دخول» فقط — هو نظام قرار كامل (سائق + طريق + قوانين مرور + تأمين).
+
+إذا كان الخسارة من:
+  • فتح صفقات ضعيفة خارج الجلسة
+  • تجاهل بيانات قديمة (stale data)
+  • تضارب GPT يوافق ثم Risk يرفض (أو العكس)
+  • Scalping منفصل يفتح بجانب Intraday
+  • حجم مخاطرة خاطئ على XAGUSD أو أزواج CHF
+
+فإضافة 10,000 استراتيجية دخول جديدة لن تصلح المشكلة — بل قد تزيد الحوادث.
+
+هذا الملف يفصل:
+  (أ) ماذا يبني SQX — إشارات دخول/خروج + SL/TP على بيانات تاريخية
+  (ب) ماذا يقرر Matrix فعلاً — من يوافق، من يرفض، ولماذا
+  (ج) كيف نربط الاثنين دون تكرار خطأ «سائق سيء بسيارة فاخرة»
+
+================================================================================
+1) خط أنابيب القرار في Matrix (السائق — ليس المحرك فقط)
+================================================================================
+
+كل دورة تداول (Cycle) تمر بالتسلسل التالي:
+
+  emergency_guard
+    → position_manager (مزامنة MT5)
+    → data_fetch (حتى 52 رمزاً في وضع full_55)
+    → sentiment
+    → analysis (ensemble قواعدي)  +  agentic_brain (GPT عند التفعيل)
+    → trading_council (7 عقول + Meta Judge)
+    → risk_batch (موافقة/رفض لكل مرشح)
+    → supervisor (قرار نهائي + approved_trades)
+    → execution (MT5 Bridge)
+    → scalping_engine (مسار مستقل — إن كان مفعّلاً)
+
+الملف المرجعي: agents/graph.py
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  من يملك «زر التنفيذ»؟                                                  │
+│  ─────────────────────                                                  │
+│  Execution يفتح صفقات فقط من: decision.approved_trades                  │
+│  (مصدر الحقيقة الوحيد — agents/execution_agent.py)                      │
+│                                                                         │
+│  أي إشارة BUY/SELL من الاستراتيجية وحدها لا تكفي.                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+────────────────────────────────────────────────────────────────────────────
+1.1) طبقة الإشارة (المحرك — ما يختبره SQX جزئياً)
+────────────────────────────────────────────────────────────────────────────
+analysis_agent — ensemble قواعدي لكل رمز:
+  • مؤشرات: RSI, Stoch, Williams, MACD, EMA stack, ADX, Ichimoku
+  • MTF (محاذاة إطارات متعددة)
+  • ICT/SMC — الوزن الأثقل (ict_ensemble_weight = 3.5 افتراضياً)
+  • Sentiment اختياري
+  • النتيجة: signal (BUY/SELL/HOLD) + strength (0–0.97)
+
+agentic_brain (GPT عبر OpenRouter) — عند brain_active=true:
+  • يعمّق 1–3 رموز لكل دورة إذا FULL_ANALYSIS_ALL_SYMBOLS=false
+  • يحلل كل الرموز إذا FULL_ANALYSIS_ALL_SYMBOLS=true (بطيء ومكلف)
+  • يمكنه SKIP_SESSION أو تعديل التحليل
+
+ملاحظة backtest الداخلي (backtest/engine.py):
+  • يختبر ensemble + ICT فقط — بدون GPT، بدون Council، بدون Risk
+  • يجيب: «هل منطق الإشارة له حافة؟» — لا يجيب: «هل السائق يقود صح؟»
+
+────────────────────────────────────────────────────────────────────────────
+1.2) المجلس — Trading Council (فلتر فلسفي قبل المخاطرة)
+────────────────────────────────────────────────────────────────────────────
+7 عقول بأوزان ثابتة (tools/trading_council.py):
+
+  market_regime      12%
+  technical_quant    18%
+  ict_price_action   15%
+  scalping           12%
+  news_macro         10%
+  strategy_router    13%
+  skeptic            12%
+  risk_prop           8%
+
+Meta Judge يدمج الأصوات:
+  • hard veto من أي عقل → رفض
+  • meta_score < -0.2 → HOLD
+  • meta_score ≥ 0.15 + إشارة BUY/SELL → موافقة مبدئية
+  • يحدد trade_style: SCALP | INTRADAY | SWING
+
+COUNCIL_MODE=enforce → المجلس يحجب المرشحين الضعفاء قبل Risk
+COUNCIL_MODE=advisory → تسجيل فقط
+
+SQX لا يحاكي هذا المجلس — يجب محاكاة فلسفته يدوياً عبر:
+  • فلاتر الجلسة (London/NY killzones)
+  • تجنب أخبار عالية التأثير
+  • RR أدنى حسب النمط
+
+────────────────────────────────────────────────────────────────────────────
+1.3) Risk — البوابة الحقيقية (أكثر ما يسبب «رفض ثم خسارة» أو العكس)
+────────────────────────────────────────────────────────────────────────────
+risk_batch.evaluate_candidates (tools/risk_batch.py) يفحص كل مرشح:
+
+  [أ] سلامة البيانات
+      • global_data_block إذا نسبة رموز stale منخفضة (مثلاً 32/52)
+      • symbol_quarantine لكل رمز
+
+  [ب] قواعد الوسيط / Prop (FundedNext)
+      • daily DD, total DD, max trades/day
+      • bridge MT5 غير متصل → رفض كامل في ACTIVE
+
+  [ج] الجلسة والوقت
+      • SESSION_FILTER_MODE=24h يسمح تداولاً أوسع لكن بحدود:
+        off_session_24h_max_open_trades, max_trades_per_day
+      • killzone=none/asian → قيود إضافية
+
+  [د] قوة الإشارة — Trade Tiers (tools/trade_tiers.py)
+      • strength < 0.60 → HOLD (لا يصل للتنفيذ)
+      • 0.60–0.68 → SMALL (مخاطرة مخفّضة 0.25%)
+      • ≥ 0.68 → NORMAL (مخاطرة كاملة حتى 0.8%)
+
+  [هـ] RR أدنى
+      • NORMAL: require_rr ≥ 1.5
+      • SMALL: require_rr ≥ 1.2
+      • Scalping: SCALPING_MIN_RR (مثلاً 1.05–1.10)
+
+  [و] سبريد، ارتباط، تعرض عملة، تقويم اقتصادي
+
+المخرج: approved_risk_trades[] — كل عنصر فيه sizing (lots, SL pips, TP pips)
+
+────────────────────────────────────────────────────────────────────────────
+1.4) Supervisor — القاضي الأخير
+────────────────────────────────────────────────────────────────────────────
+agents/supervisor_agent.py:
+
+  • إذا Risk رفض الدورة → HOLD فوري
+  • إذا LLM مفعّل → GPT يقرر approve/veto
+  • rule_fallback: إذا GPT رفض لكن Risk وافق على NORMAL-tier (≥0.68)
+    يمكن تجاوز الفيتو المحافظ (إصلاح over-veto)
+
+  • ML_FILTER / RL_FILTER (إن مفعّل) بعد Risk
+
+المخرج: SupervisorDecision + approved_trades (قائمة مرتبة بالقوة)
+
+────────────────────────────────────────────────────────────────────────────
+1.5) Execution + Scalping (مساران — خطر «سائق مزدوج»)
+────────────────────────────────────────────────────────────────────────────
+Execution: يفتح من approved_trades فقط، يحترم min_candidate_strength مرة أخرى
+
+Scalping Engine (منفصل عن الدورة الرئيسية):
+  • SCALPING_ENABLED=true, SCALPING_MODE=enforce
+  • أطر: M1, M5, M15 — FX فقط
+  • حدود: SCALPING_MAX_OPEN_TRADES, SCALPING_MAX_TRADES_PER_DAY
+  • عتبات: SCALPING_MIN_STRENGTH, SCALPING_MIN_RR
+
+⚠ تحذير: صفقة خاسرة قد تأتي من Scalp وليس من Council path — راجع تقارير
+V11_TRADE_REVIEW_REPORT.md حسب مصدر الصفقة.
+
+================================================================================
+2) لقطة الأداء (من جلساتك السابقة — للمقارنة فقط)
+================================================================================
+
+  الفترة                    النتيجة التقريبية
+  ─────────────────────────────────────────
+  قبل الإصلاح الجراحي       +$232, PF ~2.03
+  بعد إصلاحات جزئية         -$126
+  إجراء ناجح               SYMBOL_QUARANTINE=GBPCHF,CADCHF
+  SQX تجريبي (GBPUSD H1)   أفضل استراتيجية PF ~1.84, DD ~3.25%, 403 صفقة
+                             (بنك بيانات ممتلئ — build توقف طبيعياً)
+
+هذه الأرقام لا تعني أن SQX «أفضل من Matrix» — SQX اختبر دخول/خروج على
+زوج واحد بإطار واحد بدون طبقات Risk/Council/GPT/Scalp.
+
+================================================================================
+3) إعدادات VPS الحالية (مرجع — لا تغيّر بدون موافقتك)
+================================================================================
+
+المسار الصحيح:
+  C:\MatrixRobot\MatrixRobot\MatrixRobot\artifacts\python-agents
+
+الملف الشخصي:
+  TRADING_MODE_PROFILE=FULL_POWER_DEMO
+
+بعد إصلاح التحليل العميق:
+  FULL_ANALYSIS_ALL_SYMBOLS=false  (في .env — يُحترم الآن من config + profiles)
+
+الإصلاح الجراحي (V11_SURGICAL_HOTFIX.env.txt — مدمج أو يُدمج):
+  SYMBOL_QUARANTINE=GBPCHF,CADCHF
+  SCALPING_MIN_STRENGTH=0.61
+  SCALPING_MIN_RR=1.10
+  TIME_FILTER_09_12_MIN_STRENGTH_BONUS=0.07
+  XAGUSD_RISK_MULTIPLIER=0.50
+  ML_FILTER_MODE=advisory
+
+FULL_POWER_DEMO (أبرز القيم — V11_FULL_POWER_DEMO.env.txt):
+  SYMBOL_UNIVERSE_MODE=full_55
+  SESSION_FILTER_MODE=24h
+  MAX_CONCURRENT_POSITIONS=15
+  MAX_TRADES_PER_DAY=80
+  COUNCIL_ENABLED=true, COUNCIL_MODE=enforce
+  SCALPING_ENABLED=true, SCALPING_MODE=enforce
+  ACTIVE_DISABLED_SYMBOLS=US30,US500,USTEC
+
+عالم الرموز:
+  • Demo افتراضي: 25 زوجاً سائلاً + XAUUSD (tools/symbol_registry.py)
+  • Full: 48 FX + معادن + نفط + مؤشرات (~55)
+
+================================================================================
+4) ماذا يختبر SQX — وماذا لا يختبر
+================================================================================
+
+┌──────────────────────────┬────────────────────────────────────────────────┐
+│ SQX يختبره               │ SQX لا يختبره (يبقى في Matrix)                 │
+├──────────────────────────┼────────────────────────────────────────────────┤
+│ قواعد دخول/خروج          │ GPT agentic_brain / OpenRouter                 │
+│ SL/TP ثابت أو ATR        │ Trading Council + Meta Judge                   │
+│ Multi-symbol build       │ risk_batch (data gate, prop, session tiers)    │
+│ Genetic / Retest         │ Supervisor LLM veto + rule_fallback            │
+│ Monte Carlo, WF          │ Scalping engine المنفصل                        │
+│ Profit Factor, DD        │ MT5 bridge latency / requotes / stale ticks    │
+└──────────────────────────┴────────────────────────────────────────────────┘
+
+الاستخدام الصحيح لـ SQX مع Matrix:
+  1) ابحث عن منطق دخول/خروج متوافق مع فلسفتك (ICT + trend + RR)
+  2) لا تدمج الفائز مباشرة — طبّق نفس فلاتر Matrix يدوياً في Retest
+  3) قارن مع backtest Matrix على نفس الرموز/الأطر
+  4) إذا SQX PF عالٍ لكن Matrix يخسر → المشكلة في السائق (القسم 1)
+  5) إذا كلاهما ضعيف → المشكلة في المحرك (منطق الإشارة)
+
+================================================================================
+5) إعداد SQX المقترح — 4 أزواج × 3 أطر (متوافق مع Matrix)
+================================================================================
+
+■ الأزواج الأربعة (سائلة، تطابق تركيز الديمو والمجلس)
+  EURUSD
+  GBPUSD
+  USDJPY
+  USDCAD
+
+■ الأطر الثلاثة (تغطي Intraday + Swing في Matrix)
+  M15  — سكالب / دخول سريع
+  H1   — intraday رئيسي
+  H4   — swing / تأكيد اتجاه
+
+■ نوع البناء في SQX (لا تكرر خطأ GBPUSD H1 فقط)
+  1) Build → New Strategy
+  2) Data: أضف الأزواج الأربعة + الأطر الثلاثة
+  3) Strategy type: Multi-timeframe / Multi-symbol (حسب إصدار SQX)
+     — أو Portfolio master إن كان متاحاً في الترخيص
+  4) Building blocks — محاذاة Matrix (ليس عشوائياً):
+       • Trend: EMA crossover / price above EMA200
+       • Momentum: RSI, MACD histogram
+       • Volatility: ATR for SL/TP
+       • Session filter (إن وُجد): London open + NY overlap UTC
+       • Min RR في المالّي: 1.5 للـ intraday (يطابق normal_trade_require_rr_min)
+  5) Money management في SQX:
+       • Risk per trade: 0.5–0.8% (لا 2%+ — Matrix يستخدم 0.8% max NORMAL)
+       • Max open positions: 4–7 (Matrix demo 15 لكن FN conservative 7)
+  6) Genetic settings:
+       • Population / generations: ابدأ متوسطاً (ليس 1000 استراتيجية ضعيفة)
+       • Fitness: Profit Factor + Max DD penalty (لا Profit فقط)
+  7) Databank: ارفع الحد أو صفّ قبل build جديد (تجنب «databank full»)
+
+■ معايير قبول استراتيجية من SQX (قبل التفكير في الدمج)
+  PF ≥ 1.4 على كل زوج على الأقل (أو portfolio PF ≥ 1.5)
+  Max DD ≤ 8% (أقرب لحدود prop 10%)
+  عدد صفقات كافٍ (≥ 100 على مدى العينة)
+  Walk-Forward / OOS: لا ينهار الأداء خارج العينة
+  Monte Carlo: لا tail risk كatastrophique
+
+■ ما لا تفعله
+  ✗ بناء 1000 استراتيجية على زوج واحد ثم نسخها كلها لـ Matrix
+  ✗ تجاهل جلسة London/NY بينما Matrix يفلتر off-session
+  ✗ RR 1:1 بينما Matrix يرفض NORMAL تحت 1.5
+  ✗ دمج Scalp SQX مع Scalp Matrix دون خفض أحدهما
+
+================================================================================
+6) تشخيص «سائق سيء» — قائمة فحص عند الخسارة
+================================================================================
+
+عند كل صفقة خاسرة في V11_TRADE_REVIEW_REPORT.md اسأل:
+
+  [1] المصدر: ensemble | brain-gpt | scalp | council-reject؟
+  [2] strength: هل كانت SMALL (0.60–0.68) تُفتح بمخاطرة مخفّضة لكن كثيرة؟
+  [3] الجلسة: killzone=none أو asian مع 24h mode؟
+  [4] data_quarantine: هل الدورة كانت global_data_block؟
+  [5] الزوج: GBPCHF/CADCHF قبل quarantine؟ XAGUSD بدون multiplier؟
+  [6] GPT: هل veto ثم rule_fallback فتح صفقة؟
+  [7] تضارب: scalp فتح بينما council كان HOLD على نفس الرمز؟
+
+إصلاحات محتملة (بموافقتك فقط — ليست من SQX):
+  • رفع SCALPING_MIN_STRENGTH / تقليل SCALPING_MAX_TRADES_PER_DAY
+  • توسيع SYMBOL_QUARANTINE
+  • FULL_ANALYSIS_ALL_SYMBOLS=false + DEEP_ANALYSIS_TOP_N=3 (تكلفة + جودة)
+  • COUNCIL_MODE=enforce (مفعّل)
+  • تقييد OFF_SESSION_24H_* إذا الخسائر ليلاً
+
+================================================================================
+7) خطة العمل المتسلسلة (بموافقتك خطوة بخطوة)
+================================================================================
+
+  الخطوة 1  ✅ هذا الملف (MATRIX_FOR_SQX_SPEC.txt)
+  الخطوة 2  ⏳ SQX: بناء Multi-symbol 4×3 حسب القسم 5
+  الخطوة 3  ⏳ VPS: backtest Matrix لنفس الأربعة (RUN_BACKTEST أو API)
+  الخطوة 4  ⏳ مقارنة: أين يتفق الاثنان؟ أين يختلف السائق؟
+  الخطوة 5  ⏳ QuantConnect — لاحقاً (محفظة + OOS)
+  الخطوة 6  ⏳ دمج فائز SQX في Matrix — فقط بموافقة صريحة
+
+================================================================================
+8) أوامر سريعة (مرجع)
+================================================================================
+
+Matrix backtest (VPS — Brain يعمل على 8000):
+  POST http://127.0.0.1:8000/agents/backtest/run
+  Header: X-Brain-Secret: <من .env>
+  Body: {"symbol":"EURUSD","timeframe":"H1","bars_limit":2000}
+
+  أو: RUN_BACKTEST_EURUSD.bat (لابتوب — انسخ للـ VPS)
+
+تقرير الصفقات:
+  artifacts\python-agents\V11_TRADE_REVIEW_REPORT.md
+
+SQX مسار التثبيت (لابتوب):
+  C:\SQX
+
+================================================================================
+9) الخلاصة بجملة واحدة
+================================================================================
+
+StrategyQuant يجد لك محركات قوية؛ Matrix يقرر من يقود، متى، بكم، وهل الطريق
+آمن. استخدم SQX لتحسين المحرك على 4×3 — واستخدم هذا الملف لتشخيص السائق
+عندما تختلف النتائج.
+
+================================================================================
+نهاية المواصفات — للمراجعة والموافقة قبل أي خطوة تالية
+================================================================================

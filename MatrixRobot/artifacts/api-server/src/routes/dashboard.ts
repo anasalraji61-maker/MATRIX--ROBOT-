@@ -25,7 +25,7 @@ const TOTAL_LIMIT_PCT = parseFloat(process.env.TOTAL_LIMIT_PCT ?? "8.0");
 let lastRefreshed = new Date().toISOString();
 let refreshCount = 0;
 
-// ── Demo account (replaced by real MT5 values when connected) ─
+// ── Demo account fallback (when Python agents offline) ───────
 let demoBalance = 10000;
 let demoDailyDrawdown = 0;
 let demoTotalDrawdown = 0;
@@ -35,6 +35,58 @@ function randomiseDemoValues() {
   demoTotalDrawdown = +(Math.random() * 4.5 + 0.5).toFixed(2);
 }
 randomiseDemoValues();
+
+type PropStatusPayload = {
+  account?: {
+    balance?: number;
+    equity?: number;
+    daily_drawdown_pct?: number;
+    total_drawdown_pct?: number;
+    currency?: string;
+    available?: boolean;
+  };
+  drawdown?: {
+    daily_pct?: number;
+    total_pct?: number;
+  };
+  can_trade?: boolean;
+};
+
+async function fetchPropStatusFromPython(): Promise<PropStatusPayload | null> {
+  const PYTHON_URL = process.env.PYTHON_AGENT_URL ?? "http://127.0.0.1:8000";
+  try {
+    const r = await fetch(`${PYTHON_URL}/agents/prop-status`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as PropStatusPayload;
+  } catch {
+    return null;
+  }
+}
+
+function accountFromPropStatus(prop: PropStatusPayload | null) {
+  const acct = prop?.account;
+  if (!acct?.available && acct?.equity == null && acct?.balance == null) {
+    return null;
+  }
+  const balance = Number(acct?.balance ?? demoBalance);
+  const equity = Number(acct?.equity ?? balance);
+  const dailyDd = Number(
+    acct?.daily_drawdown_pct ?? prop?.drawdown?.daily_pct ?? demoDailyDrawdown,
+  );
+  const totalDd = Number(
+    acct?.total_drawdown_pct ?? prop?.drawdown?.total_pct ?? demoTotalDrawdown,
+  );
+  return {
+    balance,
+    equity,
+    dailyDrawdownPct: dailyDd,
+    totalDrawdownPct: totalDd,
+    currency: acct?.currency ?? "USD",
+    source: "python_agents" as const,
+  };
+}
 
 // ── Static fallback data ─────────────────────────────────────
 const FALLBACK_NEWS = [
@@ -97,40 +149,66 @@ router.get("/dashboard/status", async (req, res): Promise<void> => {
     }
   };
 
-  const [polygonStatus, redisStatus, postgresStatus] = await Promise.all([
+  const [polygonStatus, redisStatus, postgresStatus, propStatus] = await Promise.all([
     checkTwelveDataConnection(),
     checkRedisConnection(),
     fetchPostgres(),
+    fetchPropStatusFromPython(),
   ]);
 
-  const mt5Configured = !!(
+  const mt5Bridge = !!(process.env.MT5_BRIDGE_URL?.trim());
+  const mt5Native = !!(
     process.env.MT5_LOGIN &&
     process.env.MT5_PASSWORD &&
     process.env.MT5_SERVER
   );
+  const mt5Configured = mt5Bridge || mt5Native;
+
+  const liveAccount = accountFromPropStatus(propStatus);
+  const account = liveAccount ?? {
+    balance: demoBalance,
+    equity: +(demoBalance * (1 - demoDailyDrawdown / 100)).toFixed(2),
+    dailyDrawdownPct: demoDailyDrawdown,
+    totalDrawdownPct: demoTotalDrawdown,
+    currency: "USD",
+    source: "demo_fallback" as const,
+  };
+
+  let effectiveTradingState = TRADING_STATE;
+  try {
+    const modeRes = await fetch(
+      `${process.env.PYTHON_AGENT_URL ?? "http://127.0.0.1:8000"}/agents/mode`,
+      { signal: AbortSignal.timeout(2500) },
+    );
+    if (modeRes.ok) {
+      const modeJson = (await modeRes.json()) as { mode?: string };
+      if (modeJson.mode) effectiveTradingState = modeJson.mode as typeof TRADING_STATE;
+    }
+  } catch {
+    /* keep env default */
+  }
 
   res.json({
     systemOnline: true,
-    tradingState: TRADING_STATE,
+    tradingState: effectiveTradingState,
     polygon: polygonStatus,
     redis: redisStatus,
     postgres: postgresStatus,
     mt5: {
       connected: mt5Configured,
-      message: mt5Configured
-        ? "MT5 credentials configured — Python bridge required to activate"
-        : "MT5 not configured — set MT5_LOGIN, MT5_PASSWORD, MT5_SERVER",
+      message: mt5Bridge
+        ? "MT5 bridge URL configured"
+        : mt5Native
+          ? "MT5 credentials configured — Python bridge required to activate"
+          : "MT5 not configured — set MT5_BRIDGE_URL or MT5_LOGIN/PASSWORD/SERVER",
       latencyMs: null,
     },
     account: {
-      balance: demoBalance,
-      equity: +(demoBalance * (1 - demoDailyDrawdown / 100)).toFixed(2),
-      dailyDrawdownPct: demoDailyDrawdown,
-      totalDrawdownPct: demoTotalDrawdown,
+      ...account,
       dailyLimitPct: DAILY_LIMIT_PCT,
       totalLimitPct: TOTAL_LIMIT_PCT,
-      currency: "USD",
     },
+    propCanTrade: propStatus?.can_trade ?? null,
     lastUpdated: lastRefreshed,
   });
 });
@@ -271,13 +349,18 @@ router.get("/ohlc/:symbol", async (req, res): Promise<void> => {
 router.post("/dashboard/refresh", async (req, res): Promise<void> => {
   refreshCount++;
   lastRefreshed = new Date().toISOString();
-  randomiseDemoValues(); // Simulate account change until MT5 connected
+
+  const prop = await fetchPropStatusFromPython();
+  if (!accountFromPropStatus(prop)) {
+    randomiseDemoValues();
+  }
 
   logger.info({ refreshCount }, "Dashboard refresh triggered");
   res.json({
     success: true,
     message: `Data refreshed successfully (refresh #${refreshCount})`,
     timestamp: lastRefreshed,
+    accountSource: accountFromPropStatus(prop) ? "python_agents" : "demo_fallback",
   });
 });
 

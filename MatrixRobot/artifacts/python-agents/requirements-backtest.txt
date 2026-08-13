@@ -1,0 +1,5 @@
+# Optional — install once on VPS for VectorBT backtests:
+#   .\.venv\Scripts\pip install -r requirements-backtest.txt
+vectorbt>=0.26.2
+numba>=0.58.0
+plotly>=5.18.0

@@ -144,38 +144,111 @@ async def fetch_historical(symbol: str, limit: int = 120, timeframe: str = "H1")
     return _mock_bars(symbol, limit)
 
 
-async def fetch_news(symbols: list[str], limit: int = 10) -> list[NewsItem]:
+# Tickers queried for macro/forex headlines (matches Node fetchForexNews strategy)
+_FOREX_NEWS_TICKERS = [
+    "C:EURUSD", "C:GBPUSD", "C:USDJPY", "C:XAUUSD", "C:XAGUSD",
+    "C:USDCAD", "SPY", "GLD",
+]
+
+
+async def _fetch_news_for_ticker(
+    client: httpx.AsyncClient, api_key: str, ticker: str, per_ticker: int = 5
+) -> list[NewsItem]:
+    try:
+        r = await client.get(
+            f"{BASE}/v2/reference/news",
+            params={
+                "apiKey": api_key,
+                "ticker": ticker,
+                "limit": per_ticker,
+                "order": "desc",
+                "sort": "published_utc",
+            },
+        )
+        if r.status_code != 200:
+            return []
+        return [
+            NewsItem(
+                title=n.get("title", ""),
+                summary=(n.get("description") or "")[:300],
+                publisher=(n.get("publisher") or {}).get("name", "Unknown"),
+                published_at=n.get("published_utc", ""),
+            )
+            for n in r.json().get("results", [])
+            if n.get("title")
+        ]
+    except Exception:
+        return []
+
+
+async def fetch_forex_news(limit: int = 12) -> list[NewsItem]:
+    """Fetch and dedupe real headlines from Polygon (forex + macro tickers)."""
     settings = get_settings()
     if not settings.has_polygon:
-        return _mock_news()
+        return []
 
-    tickers = ",".join(_to_polygon_ticker(s) for s in symbols)
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    seen_titles: set[str] = set()
+    merged: list[NewsItem] = []
+
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        # Also try a general feed (no ticker filter) — works on some plans
         try:
             r = await client.get(
                 f"{BASE}/v2/reference/news",
                 params={
                     "apiKey": settings.polygon_api_key,
-                    "ticker": tickers,
-                    "limit": limit,
+                    "limit": min(limit, 10),
                     "order": "desc",
+                    "sort": "published_utc",
                 },
             )
             if r.status_code == 200:
-                items = [
-                    NewsItem(
-                        title=n.get("title", ""),
-                        summary=n.get("description", "")[:300],
-                        publisher=n.get("publisher", {}).get("name", "Unknown"),
+                for n in r.json().get("results", []):
+                    title = (n.get("title") or "").strip()
+                    if not title or title in seen_titles:
+                        continue
+                    seen_titles.add(title)
+                    merged.append(NewsItem(
+                        title=title,
+                        summary=(n.get("description") or "")[:300],
+                        publisher=(n.get("publisher") or {}).get("name", "Unknown"),
                         published_at=n.get("published_utc", ""),
-                    )
-                    for n in r.json().get("results", [])
-                ]
-                return items or _mock_news()
+                    ))
         except Exception:
             pass
 
-    return _mock_news()
+        if len(merged) < limit:
+            import asyncio
+            batches = await asyncio.gather(
+                *[
+                    _fetch_news_for_ticker(client, settings.polygon_api_key, t)
+                    for t in _FOREX_NEWS_TICKERS
+                ],
+                return_exceptions=True,
+            )
+            for batch in batches:
+                if isinstance(batch, Exception):
+                    continue
+                for item in batch:
+                    key = item.title.strip()
+                    if key and key not in seen_titles:
+                        seen_titles.add(key)
+                        merged.append(item)
+
+    merged.sort(key=lambda x: x.published_at or "", reverse=True)
+    return merged[:limit]
+
+
+async def fetch_news(symbols: list[str], limit: int = 10) -> list[NewsItem]:
+    """Legacy entry — prefer tools.news_feed.fetch_news in the brain cycle."""
+    from config import get_settings
+    items = await fetch_forex_news(limit=limit)
+    if items:
+        return items
+    if getattr(get_settings(), "news_allow_mock", False):
+        return _mock_news()
+    return []
+
 
 
 def _mock_quotes(symbols: list[str]) -> list[Quote]:

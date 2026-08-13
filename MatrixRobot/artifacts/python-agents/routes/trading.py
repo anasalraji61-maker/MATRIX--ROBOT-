@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from config import get_settings
-from tools import memory, mt5_bridge, execution_variance
+from tools import memory, mt5_bridge
 import runtime_state
 
 logger = logging.getLogger("matrix.trading")
@@ -23,7 +23,7 @@ _mode_override: Optional[str] = runtime_state.get_mode()
 
 # ── Scheduler state ────────────────────────────────────────────
 _scheduler_task: Optional[asyncio.Task] = None
-_scheduler_interval_minutes: int = 30
+_scheduler_interval_minutes: int = 90
 _scheduler_running = False
 _scheduler_cycles_run = 0
 _scheduler_last_run: Optional[str] = None
@@ -101,7 +101,7 @@ async def get_mode():
 # ──────────────────────────────────────────────────────────────
 
 class SchedulerRequest(BaseModel):
-    interval_minutes: int = 30
+    interval_minutes: int = 90
 
 
 async def _scheduler_loop(interval_minutes: int):
@@ -112,19 +112,26 @@ async def _scheduler_loop(interval_minutes: int):
     from routes.cycle import _execute_cycle
     import uuid
 
-    settings = get_settings()
     while _scheduler_running:
-        # Apply interval variance if enabled, otherwise use exact interval.
-        try:
-            if getattr(settings, "exec_variance_enabled", False):
-                sleep_s = execution_variance.scheduler_interval_jitter_seconds(interval_minutes)
-            else:
-                sleep_s = interval_minutes * 60
-            sleep_s = max(30, int(sleep_s))
-        except Exception as e:
-            logger.warning(f"Scheduler interval calc failed ({e}); falling back to plain interval")
-            sleep_s = max(60, interval_minutes * 60)
-        logger.info(f"Scheduler sleeping {sleep_s}s (~{sleep_s/60:.1f} min)")
+        from config import get_settings as _gs
+        from tools.cycle_planner import get_scheduler_interval_minutes as _watcher_interval
+        _s = _gs()
+        if getattr(_s, "smart_watcher_enabled", True):
+            interval = _watcher_interval(_s)
+            interval_source = "cycle_planner"
+        elif getattr(_s, "phase5_scheduler_adaptive", True):
+            from tools.session_engine import get_scheduler_interval_minutes
+            interval = get_scheduler_interval_minutes(_s)
+            interval_source = "session_engine"
+        else:
+            interval = interval_minutes
+            interval_source = "fixed"
+        sleep_s = max(60, interval * 60)
+        logger.info(
+            "Scheduler sleeping %ss (~%.1f min, source=%s, smart_watcher=%s)",
+            sleep_s, sleep_s / 60, interval_source,
+            getattr(_s, "smart_watcher_enabled", True),
+        )
         await asyncio.sleep(sleep_s)
         if not _scheduler_running:
             break
@@ -210,12 +217,6 @@ async def scheduler_status():
     }
 
 
-@router.get("/execution-variance")
-async def get_execution_variance():
-    """Current execution-variance configuration snapshot."""
-    return execution_variance.snapshot()
-
-
 # ──────────────────────────────────────────────────────────────
 # Live positions (from MT5 bridge if ACTIVE, from memory otherwise)
 # ──────────────────────────────────────────────────────────────
@@ -266,25 +267,21 @@ async def close_position(trade_id: str):
 
     result = await mt5_bridge.close_trade(trade_id, mode)
 
-    # Remove from memory only after a successful bridge close
     closed = next((p for p in positions if str(p.get("trade_id")) == trade_id), None)
     updated = [p for p in positions if str(p.get("trade_id")) != trade_id]
-    memory.store("open_positions", updated)
+    if result.get("success"):
+        memory.store("open_positions", updated)
 
-    # Log outcome so the brain's query_history can learn from past trades.
-    if closed is not None:
+    if closed is not None and result.get("success"):
         try:
-            memory.log_trade_outcome({
-                "trade_id": trade_id,
-                "symbol": closed.get("symbol"),
-                "side": closed.get("side") or closed.get("type"),
-                "entry": closed.get("entry") or closed.get("price"),
-                "exit": result.get("close_price") or result.get("price"),
-                "pnl": result.get("pnl") or result.get("profit"),
-                "mode": mode,
-                "reason": "manual_close",
-                "bridge_status": result.get("status"),
-            })
+            from tools import close_logger
+            bridge = (settings.mt5_bridge_url or "").rstrip("/") or None
+            await close_logger.log_position_closed(
+                closed,
+                account_id="primary",
+                bridge_url=bridge,
+                source="manual_api",
+            )
         except Exception:
             logger.exception("Failed to log trade outcome")
 

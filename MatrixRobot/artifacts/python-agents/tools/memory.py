@@ -101,7 +101,10 @@ def store(key: str, value: Any, ttl_seconds: int = 3600) -> None:
     client = _get_redis()
     if client:
         try:
-            client.set(f"matrix:{key}", serialized, ex=ttl_seconds)
+            if ttl_seconds and ttl_seconds > 0:
+                client.set(f"matrix:{key}", serialized, ex=ttl_seconds)
+            else:
+                client.set(f"matrix:{key}", serialized)
             return
         except Exception:
             pass
@@ -122,11 +125,10 @@ def retrieve(key: str) -> Any | None:
                     (key,),
                 )
                 row = cur.fetchone()
-                if row is None:
-                    return None
-                val = row[0]
-                # psycopg returns jsonb already decoded
-                return val
+                if row is not None:
+                    val = row[0]
+                    if val is not None:
+                        return val
         except Exception:
             pass
     client = _get_redis()
@@ -323,6 +325,12 @@ def log_trade_outcome(outcome: dict) -> None:
     Schema: {ts, ticket, symbol, side, entry, exit, volume, pnl, reason}."""
     outcome = dict(outcome)
     outcome.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    if outcome.get("ticket") is None and outcome.get("trade_id") is not None:
+        tid = outcome.get("trade_id")
+        try:
+            outcome["ticket"] = int(tid)
+        except (TypeError, ValueError):
+            outcome["ticket"] = tid
 
     # Update strategy scores with outcome
     try:
@@ -459,6 +467,11 @@ def get_recent_drawdown_snapshots(limit: int = 100) -> list[dict]:
 
 
 # ── Health checks ──────────────────────────────────────────────────
+
+def has_persistent_backend() -> bool:
+    """True when state survives process restarts (Postgres or Redis)."""
+    return has_postgres() or is_redis_connected()
+
 
 def is_redis_connected() -> bool:
     client = _get_redis()

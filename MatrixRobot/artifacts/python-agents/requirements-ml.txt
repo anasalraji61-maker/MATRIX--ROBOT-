@@ -1,0 +1,13 @@
+# Matrix ML Lab — install on the LAPTOP (RTX), not required on VPS Brain runtime.
+#
+# GPU (recommended on Lenovo RTX):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements-ml.txt
+#
+# CPU fallback:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-ml.txt
+
+torch>=2.2.0
+mlflow>=2.12.0
+scikit-learn>=1.4.0

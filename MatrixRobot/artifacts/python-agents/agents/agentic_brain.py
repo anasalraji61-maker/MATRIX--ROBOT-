@@ -42,7 +42,7 @@ STEP 0 — Policy check (ALWAYS FIRST):
     paused symbols, conviction overrides. Do this BEFORE scanning the universe.
 
 STEP 1 — Universe scan:
-  • `universe_snapshot()` — one-line overview of all 24 symbols.
+  • `universe_snapshot()` — one-line overview of all monitored symbols.
 
 STEP 2 — Deep analysis on 1–3 promising symbols:
   • `get_indicators(symbol)` — RSI, MACD, ATR, EMAs, Bollinger, Stoch, ADX…
@@ -63,6 +63,9 @@ STEP 3 — Self-check before deciding:
   • `query_history(symbol)` — your OWN past decisions + trade outcomes on this
     symbol. Strongly recommended before any BUY/SELL to avoid flip-flopping
     and to learn from prior losses.
+  • `get_loss_lessons(symbol)` — post-mortems of past LOSING trades: why your
+    thinking failed and how you must think differently. REQUIRED before
+    re-entering a symbol you previously lost on.
   • `get_prop_status()` — FundedNext compliance snapshot. If can_trade=false,
     EVERY symbol must be HOLD. Always call this before finalizing.
 
@@ -157,7 +160,13 @@ def _empty_analysis(symbol: str, reason: str) -> AnalysisResult:
 
 async def run(state: dict) -> dict:
     settings = get_settings()
+    from tools.universe_manager import is_full_power
     symbols = state.get("symbols_analyzed", settings.symbol_list)
+
+    if is_full_power(settings) and getattr(settings, "full_analysis_all_symbols", True):
+        from agents import analysis_agent
+        logger.info("FULL_POWER_DEMO — ensemble analysis for %d symbols", len(symbols))
+        return await analysis_agent.run(state)
 
     # No LLM key → defer to legacy ensemble analysis_agent
     if not settings.has_llm:
@@ -171,6 +180,16 @@ async def run(state: dict) -> dict:
         from tools import llm_circuit
         if llm_circuit.is_credit_or_auth_error(e):
             llm_circuit.trip_openrouter(f"agentic_brain: {e}")
+        try:
+            from tools import self_learning
+            self_learning.record_event(
+                layer="llm",
+                kind="llm_fail",
+                reason=str(e)[:240],
+                severity="high",
+            )
+        except Exception:
+            pass
         logger.exception("Agentic brain failed — falling back to ensemble")
         from agents import analysis_agent
         return await analysis_agent.run(state)
@@ -194,6 +213,14 @@ async def run(state: dict) -> dict:
         if s not in seen:
             analyses.append(_empty_analysis(s, "Brain skipped this symbol").model_dump())
 
+    try:
+        from tools import self_learning
+        analyses, removed = self_learning.filter_analyses(analyses, settings)
+        if removed:
+            state = {**state, "self_learning_analysis_removed": removed}
+    except Exception:
+        pass
+
     best = _pick_best(analyses)
     return {**state, "analyses": analyses, "best_analysis": best}
 
@@ -205,10 +232,29 @@ def _pick_best(analyses: list[dict]) -> dict:
     return max(actionable, key=lambda a: a.get("strength", 0.0))
 
 
+def _build_cycle_context(state: dict) -> str:
+    """Auto-inject sentiment + semantic memory — Claude always sees news backdrop."""
+    parts: list[str] = []
+    sentiment = state.get("sentiment") or {}
+    if sentiment and sentiment.get("news_count", 0) > 0 or sentiment.get("briefing"):
+        parts.append("═══ NEWS & SENTIMENT (auto-injected — use in every decision) ═══")
+        parts.append(
+            f"FinBERT/source: {sentiment.get('label', 'NEUTRAL')} "
+            f"score={sentiment.get('score', 0):+.3f} "
+            f"confidence={sentiment.get('confidence', 0):.2f} "
+            f"via {sentiment.get('source', '?')}"
+        )
+        if sentiment.get("briefing"):
+            parts.append(f"GPT market briefing:\n{sentiment['briefing']}")
+        if sentiment.get("similar_context"):
+            parts.append(sentiment["similar_context"])
+    return "\n".join(parts)
+
+
 async def _agentic_loop(state: dict, settings, symbols: list[str]) -> list[dict]:
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
-    # Pick LLM — prefer Claude Sonnet 4.5 via OpenRouter (primary),
+    # Pick LLM — prefer primary_model via OpenRouter (default gpt-4o-mini),
     # then Gemini 2.5 Flash (free fallback), then OpenAI.
     from tools import llm_circuit
     if settings.effective_openrouter_key and llm_circuit.is_openrouter_available():
@@ -245,11 +291,24 @@ async def _agentic_loop(state: dict, settings, symbols: list[str]) -> list[dict]
 
     profile = getattr(settings, "account_profile", "FN_CHALLENGE")
     sys = SYSTEM_PROMPT_TEMPLATE.replace("__PROFILE__", profile)
+    try:
+        from tools import loss_investigator
+        lessons = loss_investigator.brain_context_notes(limit=10)
+        if lessons:
+            sys = sys + "\n\n" + lessons
+    except Exception:
+        pass
+    context_block = _build_cycle_context(state)
     user = (
         f"Universe ({len(symbols)} symbols): {', '.join(symbols)}\n"
         f"Account profile: {getattr(settings, 'account_profile', 'FN_CHALLENGE')}\n"
         f"Trading mode: {state.get('mode', settings.trading_state)}\n"
-        f"Start with universe_snapshot, then drill into the 1-3 most actionable."
+    )
+    if context_block:
+        user += f"\n{context_block}\n"
+    user += (
+        "Start with universe_snapshot, then drill into the 1-3 most actionable. "
+        "Call get_loss_lessons for any symbol you nearly trade if you lost on it before."
     )
     messages = [SystemMessage(content=sys), HumanMessage(content=user)]
 

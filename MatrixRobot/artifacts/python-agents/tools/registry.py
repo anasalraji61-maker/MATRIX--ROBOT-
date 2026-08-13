@@ -172,6 +172,27 @@ def build_tools(state: dict):
         return _j(out)
 
     @tool
+    def get_loss_lessons(symbol: str = "") -> str:
+        """Post-mortems of past LOSING trades for a symbol (or global notes).
+
+        Returns why your thinking failed, how you must think differently,
+        strength penalties, and human advice for code/config changes.
+        Call this BEFORE proposing BUY/SELL on a symbol you lost on before."""
+        from tools import loss_investigator as _li
+        sym = (symbol or "").strip().upper()
+        snap = _li.get_snapshot()
+        cases = snap.get("recent_cases") or []
+        if sym:
+            cases = [c for c in cases if str(c.get("symbol", "")).upper() == sym]
+        return _j({
+            "symbol": sym or "*",
+            "thinking_notes": _li.brain_context_notes(sym or None, limit=10),
+            "strength_penalty": _li.strength_penalty(sym, "BUY") if sym else 0,
+            "recent_cases": cases[-5:],
+            "pending_advice": (snap.get("pending_advice") or [])[-8:],
+        })
+
+    @tool
     def query_history(symbol: str = "", limit: int = 5) -> str:
         """Return your own recent analyses (and any closed trade outcomes) for
         a symbol — or across the whole universe if symbol is empty. Use this to:
@@ -337,6 +358,7 @@ def build_tools(state: dict):
         get_prop_status,
         get_quote,
         query_history,
+        get_loss_lessons,
         apply_adaptive_change,
         run_python_code,
     ]

@@ -355,9 +355,10 @@ def apply_adaptation(
     value: float | str | None = None,
     expires_hours: int | None = None,
     daily_dd_pct: float = 0.0,
+    applied_by: str = "brain",
 ) -> dict:
     """
-    Apply a brain-requested defensive adaptation.
+    Apply a defensive adaptation (brain tool or mistake_learner).
     Returns a result dict (success or error).
 
     daily_dd_pct: optionally pass current daily drawdown % for RESET_RISK guardrail.
@@ -608,7 +609,7 @@ def apply_adaptation(
         "rollback_condition": rollback_condition,
         "fn_compliance_note": fn_compliance_note,
         "result": result_msg,
-        "applied_by": "brain",
+        "applied_by": applied_by or "brain",
     }
     state.setdefault("adaptation_log", []).append(log_entry)
     state["adaptation_log"] = state["adaptation_log"][-_MAX_LOG_ENTRIES:]

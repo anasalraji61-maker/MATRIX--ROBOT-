@@ -66,6 +66,16 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    ...(process.env.REPL_ID === undefined
+      ? {
+          proxy: {
+            "/api": {
+              target: process.env.VITE_API_URL ?? "http://127.0.0.1:8080",
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
   },
   preview: {
     port,
